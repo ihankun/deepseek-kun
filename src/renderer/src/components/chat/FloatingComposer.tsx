@@ -140,6 +140,13 @@ type Props = {
   hideBtwCommand?: boolean
 }
 
+type SkillCommand = NonNullable<Props['skillCommands']>[number]
+
+const EMPTY_MODEL_GROUPS: ModelProviderModelGroup[] = []
+const EMPTY_ATTACHMENTS: AttachmentReference[] = []
+const EMPTY_FILE_REFERENCES: ComposerFileReference[] = []
+const EMPTY_SKILL_COMMANDS: SkillCommand[] = []
+
 type ComposerTransferItem = {
   kind?: string
   type?: string
@@ -456,7 +463,7 @@ export function FloatingComposer({
   hasActiveThread,
   composerModel,
   composerPickList,
-  composerModelGroups = [],
+  composerModelGroups = EMPTY_MODEL_GROUPS,
   composerReasoningEffort,
   onComposerModelChange,
   onComposerReasoningEffortChange,
@@ -464,13 +471,13 @@ export function FloatingComposer({
   modelPickerMode = 'select',
   queuedMessages,
   onRemoveQueuedMessage,
-  attachments = [],
+  attachments = EMPTY_ATTACHMENTS,
   attachmentUploadEnabled = false,
   attachmentUploadBusy = false,
   attachmentUploadError = null,
   fileReferenceEnabled = false,
-  fileReferences = [],
-  skillCommands = [],
+  fileReferences = EMPTY_FILE_REFERENCES,
+  skillCommands = EMPTY_SKILL_COMMANDS,
   onPickAttachments,
   onPasteClipboardImage,
   onRemoveAttachment,
@@ -811,7 +818,7 @@ export function FloatingComposer({
 
   useEffect(() => {
     if (!showFileMentionMenu || !activeFileMention || !effectiveWorkspaceRoot) {
-      setFileMentionSuggestions([])
+      setFileMentionSuggestions((current) => (current.length === 0 ? current : []))
       setFileMentionLoading(false)
       return
     }

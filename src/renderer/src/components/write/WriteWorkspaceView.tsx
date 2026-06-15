@@ -43,6 +43,7 @@ import { WriteWorkspaceEmptyState } from './WriteWorkspaceEmptyState'
 import { WriteWorkspaceToolbar } from './WriteWorkspaceToolbar'
 import { WriteInlineAgent } from './WriteInlineAgent'
 import { WriteWorkspaceDocumentPane } from './WriteWorkspaceDocumentPane'
+import { resolveWriteAgentPreset } from '../../write/agent-presets'
 import type { WriteMarkdownEditorHandle } from './WriteMarkdownEditor'
 import {
   INLINE_EDIT_RECENT_CONTEXT_CHARS,
@@ -62,6 +63,7 @@ type Props = {
   leftSidebarCollapsed: boolean; onToggleLeftSidebar: () => void
   input: string; setInput: (value: string) => void
   onSubmitPrompt?: (value: string) => void
+  onOpenAgentSettings?: () => void
 }
 
 export function WriteWorkspaceView({
@@ -69,7 +71,8 @@ export function WriteWorkspaceView({
   onToggleLeftSidebar,
   input,
   setInput,
-  onSubmitPrompt
+  onSubmitPrompt,
+  onOpenAgentSettings
 }: Props): ReactElement {
   const { t } = useTranslation('common')
   const ensureWriteThreadForWorkspace = useChatStore((s) => s.ensureWriteThreadForWorkspace)
@@ -114,7 +117,14 @@ export function WriteWorkspaceView({
     setAssistantOpen,
     setSelection,
     recordRecentEdits,
-    quoteCurrentSelection
+    quoteCurrentSelection,
+    agentPresets,
+    assistantAgentPresetId,
+    setAssistantAgentPresetId,
+    pendingAgentReview,
+    clearPendingAgentReview,
+    reviewActive,
+    setReviewActive
   } = useWriteWorkspaceStore(
     useShallow((s) => ({
       workspaceRoot: s.workspaceRoot,
@@ -124,6 +134,13 @@ export function WriteWorkspaceView({
       inlineCompletion: s.inlineCompletion,
       inlineCompletionApiReady: s.inlineCompletionApiReady,
       selectionAssist: s.selectionAssist,
+      agentPresets: s.agentPresets,
+      assistantAgentPresetId: s.assistantAgentPresetId,
+      setAssistantAgentPresetId: s.setAssistantAgentPresetId,
+      pendingAgentReview: s.pendingAgentReview,
+      clearPendingAgentReview: s.clearPendingAgentReview,
+      reviewActive: s.reviewActive,
+      setReviewActive: s.setReviewActive,
       imageGenReady: s.imageGenReady,
       fileContent: s.fileContent,
       imageDataUrl: s.imageDataUrl,
@@ -167,6 +184,7 @@ export function WriteWorkspaceView({
   const markdownHandleRef = useRef<WriteMarkdownEditorHandle | null>(null)
   const [inlineAgentValue, setInlineAgentValue] = useState('')
   const [pointerSelecting, setPointerSelecting] = useState(false)
+  const resolvedAgentPresets = agentPresets.map((preset) => resolveWriteAgentPreset(preset))
   const [inlineEditInFlight, setInlineEditInFlight] = useState(false)
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
@@ -236,6 +254,8 @@ export function WriteWorkspaceView({
   const submitInlineAgent = (prompt: string): void => {
     const trimmed = prompt.trim()
     if (!trimmed || !workspaceReady || !activeFilePath) return
+    // The active agent persona is applied downstream (folded into the prompt
+    // context in sendWritePrompt) so it never shows as raw text in the bubble.
     quoteCurrentSelection(workspaceRoot)
     setAssistantOpen(true)
     setInlineAgentValue('')
@@ -301,6 +321,10 @@ export function WriteWorkspaceView({
       setFileError(t('writeReadOnlySaveDisabled'))
       return
     }
+    if (markdownHandleRef.current?.isDiffReviewActive()) {
+      setFileError(t('writeInlineEditReviewPending'))
+      return
+    }
     if (selection.ranges.length !== 1) {
       setFileError(t(selection.ranges.length > 1 ? 'writeInlineEditMultiSelection' : 'writeInlineEditNoSelection'))
       return
@@ -363,41 +387,67 @@ export function WriteWorkspaceView({
       }
 
       const latest = useWriteWorkspaceStore.getState()
-      if (
-        latest.activeFilePath !== activeFilePath ||
-        latest.activeFileKind !== 'text' ||
-        latest.fileContent.slice(draft.scope.from, draft.scope.to) !== draft.scope.text
-      ) {
+      if (latest.activeFilePath !== activeFilePath || latest.activeFileKind !== 'text') {
         setFileError(t('writeInlineEditChanged'))
         return
       }
+      // The document can shift during the multi-second model call (live-preview
+      // normalization, autosave round-trips, …). Re-locate the scope in the
+      // latest content instead of hard-failing on a stale offset; only give up
+      // when the selected text is gone or no longer unique.
+      const baseline = latest.fileContent
+      let scopeFrom = draft.scope.from
+      let scopeTo = draft.scope.to
+      if (baseline.slice(scopeFrom, scopeTo) !== draft.scope.text) {
+        const firstMatch = draft.scope.text ? baseline.indexOf(draft.scope.text) : -1
+        const unique = firstMatch >= 0 && baseline.indexOf(draft.scope.text, firstMatch + 1) === -1
+        if (!unique) {
+          setFileError(t('writeInlineEditChanged'))
+          return
+        }
+        scopeFrom = firstMatch
+        scopeTo = firstMatch + draft.scope.text.length
+      }
 
-      const nextContent = applyWriteInlineEditReplacement(latest.fileContent, draft.scope, replacement)
+      const nextContent = applyWriteInlineEditReplacement(
+        baseline,
+        { ...draft.scope, from: scopeFrom, to: scopeTo },
+        replacement
+      )
       const inlineEditRecord = createWriteRecentEdit({
         source: 'inline-edit',
         filePath: activeFilePath,
-        from: draft.scope.from,
-        to: draft.scope.to,
+        from: scopeFrom,
+        to: scopeTo,
         deletedText: draft.scope.text,
         insertedText: replacement,
-        beforeContext: latest.fileContent.slice(
-          Math.max(0, draft.scope.from - INLINE_EDIT_RECENT_CONTEXT_CHARS),
-          draft.scope.from
-        ),
+        beforeContext: baseline.slice(Math.max(0, scopeFrom - INLINE_EDIT_RECENT_CONTEXT_CHARS), scopeFrom),
         afterContext: nextContent.slice(
-          draft.scope.from + replacement.length,
-          Math.min(nextContent.length, draft.scope.from + replacement.length + INLINE_EDIT_RECENT_CONTEXT_CHARS)
+          scopeFrom + replacement.length,
+          Math.min(nextContent.length, scopeFrom + replacement.length + INLINE_EDIT_RECENT_CONTEXT_CHARS)
         ),
         instruction: trimmed,
         scopeKind: draft.scope.kind
       })
 
-      setFileContent(nextContent)
-      if (inlineEditRecord) recordRecentEdits([inlineEditRecord])
+      // Land the rewrite as an inline red/green diff review when the editor
+      // supports it (source/live CodeMirror); fall back to a direct apply
+      // (rich mode, or no handle) otherwise.
+      const startedReview = markdownHandleRef.current?.beginDiffReview({
+        original: baseline,
+        nextDoc: nextContent
+      }) ?? false
+      if (!startedReview) {
+        setFileContent(nextContent)
+        if (inlineEditRecord) recordRecentEdits([inlineEditRecord])
+      }
       setSelection({ text: '', ranges: [], charCount: 0 })
       setInlineAgentValue('')
       setFileError(null)
-      showExportNotice({ tone: 'success', message: t('writeInlineEditApplied') })
+      showExportNotice({
+        tone: 'success',
+        message: startedReview ? t('writeInlineEditReview') : t('writeInlineEditApplied')
+      })
     } catch (error) {
       setFileError(t('writeInlineEditFailed', {
         message: error instanceof Error ? error.message : String(error)
@@ -751,12 +801,31 @@ export function WriteWorkspaceView({
     }
   }, [exportNotice])
 
+  // An agent edited the active file: surface the change as a red/green diff
+  // review (baseline = what the user currently sees; the agent's version is
+  // already on disk) instead of overwriting the document.
+  useEffect(() => {
+    if (!pendingAgentReview) return
+    const nextContent = pendingAgentReview.nextContent
+    clearPendingAgentReview()
+    const baseline = useWriteWorkspaceStore.getState().fileContent
+    const started = markdownHandleRef.current?.beginDiffReview({
+      original: baseline,
+      nextDoc: nextContent
+    }) ?? false
+    if (!started) {
+      // Rich mode / no source editor / identical content: apply directly.
+      setFileContent(nextContent)
+      setReviewActive(false)
+    }
+  }, [pendingAgentReview, clearPendingAgentReview, setFileContent, setReviewActive])
+
   useEffect(() => {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current)
       saveTimerRef.current = null
     }
-    if (saveStatus !== 'dirty' || !workspaceReady || !activeFileIsText || renderSafety.readOnly) return
+    if (saveStatus !== 'dirty' || !workspaceReady || !activeFileIsText || renderSafety.readOnly || reviewActive) return
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null
       void flushSave(workspaceRoot)
@@ -767,7 +836,7 @@ export function WriteWorkspaceView({
         saveTimerRef.current = null
       }
     }
-  }, [flushSave, saveStatus, workspaceReady, workspaceRoot, fileContent, activeFileIsText, renderSafety.readOnly])
+  }, [flushSave, saveStatus, workspaceReady, workspaceRoot, fileContent, activeFileIsText, renderSafety.readOnly, reviewActive])
 
   useEffect(() => () => {
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
@@ -890,6 +959,7 @@ export function WriteWorkspaceView({
         readOnly={renderSafety.readOnly}
         saveLabel={saveLabel}
         saveStatus={saveStatus}
+        reviewActive={reviewActive}
         setAssistantOpen={setAssistantOpen}
         setExportMenuOpen={setExportMenuOpen}
         setModeMenuOpen={setModeMenuOpen}
@@ -931,6 +1001,7 @@ export function WriteWorkspaceView({
             richModeActive={richModeActive}
             richHandleRef={richHandleRef}
             markdownHandleRef={markdownHandleRef}
+            onMarkdownReviewStateChange={setReviewActive}
             debouncedPreviewContent={debouncedPreviewContent}
             isMarkdown={isMarkdown}
             inlineCompletion={inlineCompletion}
@@ -977,6 +1048,10 @@ export function WriteWorkspaceView({
           quickActions={inlineQuickActions}
           onQuickAction={runQuickAction}
           onQuoteSelection={quoteSelectionToAssistant}
+          agentPresets={resolvedAgentPresets}
+          activeAgentId={assistantAgentPresetId}
+          onSelectAgent={setAssistantAgentPresetId}
+          onOpenAgentSettings={onOpenAgentSettings}
           infographicEnabled={activeFileIsText && imageGenReady && isMarkdown && !renderSafety.readOnly}
           onGenerateInfographic={generateInfographic}
         />

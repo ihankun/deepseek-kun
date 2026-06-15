@@ -74,6 +74,7 @@ function buildHarness(fetchModelsResult: FetchModelsResult): {
       },
       applyTheme: () => undefined,
       applyUiFontScale: () => undefined,
+      applyWriteTypography: () => undefined,
       applyDocumentLocale: () => undefined,
       workspaceLabelFromPath: (workspaceRoot) => workspaceRoot,
       normalizeWorkspaceRoot: (workspaceRoot) => workspaceRoot?.trim() ?? ''

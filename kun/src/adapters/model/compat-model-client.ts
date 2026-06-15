@@ -232,7 +232,11 @@ export class CompatModelClient implements ModelClient {
       yield { kind: 'error', message: 'request was aborted before start' }
       return
     }
-    const configuredEndpointFormat = this.endpointFormat()
+    const requestModel = request.model?.trim() || this.config.model
+    // Resolve the wire format per request model: a single provider (e.g.
+    // OpenCode Go) can route some models to chat completions and others to
+    // Anthropic Messages. Falls back to the provider/runtime format.
+    const configuredEndpointFormat = this.endpointFormatForModel(requestModel)
     const endpointFormat = resolveModelEndpointFormat(configuredEndpointFormat, this.config.baseUrl)
     if (!endpointFormat) {
       yield {
@@ -243,7 +247,6 @@ export class CompatModelClient implements ModelClient {
     }
     const url = buildModelEndpointUrl(this.config.baseUrl, configuredEndpointFormat)
     const stream = request.stream ?? !this.config.nonStreaming
-    const requestModel = request.model?.trim() || this.config.model
     const body = this.buildRequestBody(request, stream, { endpointFormat })
     if (round) {
       round.requestBody = body
@@ -327,6 +330,17 @@ export class CompatModelClient implements ModelClient {
 
   private endpointFormat(): ModelEndpointFormat {
     return normalizeModelEndpointFormat(this.config.endpointFormat ?? DEFAULT_MODEL_ENDPOINT_FORMAT)
+  }
+
+  /**
+   * The wire format for a specific model: a per-model override (carried on
+   * the model's capability metadata) takes precedence over the
+   * provider/runtime format. Lets one provider mix chat completions and
+   * Anthropic Messages models (e.g. OpenCode Go's minimax/qwen entries).
+   */
+  private endpointFormatForModel(model: string): ModelEndpointFormat {
+    const perModel = this.config.modelCapabilities?.(model).endpointFormat
+    return normalizeModelEndpointFormat(perModel ?? this.config.endpointFormat ?? DEFAULT_MODEL_ENDPOINT_FORMAT)
   }
 
   private modelReasoningFor(model: string): ModelCapabilityMetadata['reasoning'] | undefined {

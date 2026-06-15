@@ -27,6 +27,12 @@ const api = {
     ipcRenderer.invoke('workspace:pick-directory', defaultPath),
   confirmDialog: (options) =>
     ipcRenderer.invoke('dialog:confirm', options),
+  detectLegacySessions: () =>
+    ipcRenderer.invoke('kun:sessions:detect-legacy'),
+  importLegacySessions: (sourceDir) =>
+    ipcRenderer.invoke('kun:sessions:import-legacy', { sourceDir }),
+  pickLegacySessionDir: () =>
+    ipcRenderer.invoke('kun:sessions:pick-source-dir'),
   listSkills: (workspaceRoot) =>
     ipcRenderer.invoke('skill:list', { workspaceRoot }),
   listSkillRoots: (workspaceRoot) =>

@@ -55,6 +55,7 @@ import { SddAssistantPanel } from './sdd/SddAssistantPanel'
 import { SddDraftEditorView } from './sdd/SddDraftEditorView'
 import { SidebarTitlebarToggleButton } from './sidebar/SidebarPrimitives'
 import { composeWritePrompt } from '../write/quoted-selection'
+import { resolveWriteAgentPreset } from '../write/agent-presets'
 import { useWriteWorkspaceStore } from '../write/write-workspace-store'
 import { isWriteThreadId } from '../write/write-thread-registry'
 import { buildSddDraftId, createSddDraft, forgetRememberedSddDraft, useSddDraftStore } from '../sdd/sdd-draft-store'
@@ -1075,10 +1076,15 @@ export function Workbench(): ReactElement {
         }
       }
       const messageText = v || t('composerImageOnlyPrompt')
+      const activeAgentPreset = writeState.agentPresets.find(
+        (preset) => preset.id === writeState.assistantAgentPresetId
+      )
+      const agentPersona = activeAgentPreset ? resolveWriteAgentPreset(activeAgentPreset).persona : ''
       const prompt = composeWritePrompt(messageText, writeState.quotedSelections, {
         workspaceRoot: writeWorkspaceRoot,
         activeFilePath: writeState.activeFilePath,
-        retrieval
+        retrieval,
+        ...(agentPersona ? { agentPersona } : {})
       })
       const model = writeState.assistantModel.trim()
       const providerId =
@@ -2185,7 +2191,6 @@ export function Workbench(): ReactElement {
                 onWriteOpen={openWriteMode}
                 onOpenSettings={(section) => openSettings(section)}
                 onToggleConnectPhone={toggleConnectPhone}
-                onToggleSidebar={toggleLeftSidebar}
               />
             ) : (
             <Sidebar
@@ -2216,7 +2221,6 @@ export function Workbench(): ReactElement {
               onCodeOpen={openCodeMode}
               onWriteOpen={openWriteMode}
               onScheduleOpen={openScheduleView}
-              onToggleSidebar={toggleLeftSidebar}
             />
             )}
           </div>
@@ -2265,6 +2269,7 @@ export function Workbench(): ReactElement {
                 input={input}
                 setInput={setInput}
                 onSubmitPrompt={sendWritePrompt}
+                onOpenAgentSettings={() => openSettings('write')}
               />
               {renderRightPanel()}
             </div>
@@ -2296,13 +2301,11 @@ export function Workbench(): ReactElement {
                     leftSidebarCollapsed ? 'ds-window-controls-safe-inset' : ''
                   }`}
                 >
-                  {leftSidebarCollapsed ? (
-                    <SidebarTitlebarToggleButton
-                      onClick={toggleLeftSidebar}
-                      title={t('sidebarExpand')}
-                      ariaLabel={t('sidebarExpand')}
-                    />
-                  ) : null}
+                  <SidebarTitlebarToggleButton
+                    onClick={toggleLeftSidebar}
+                    title={leftSidebarCollapsed ? t('sidebarExpand') : t('sidebarCollapse')}
+                    ariaLabel={leftSidebarCollapsed ? t('sidebarExpand') : t('sidebarCollapse')}
+                  />
                   <SessionHeader compact className="min-w-0 flex-1" />
                 </div>
                 <div className="chat-topbar-actions flex min-w-0 flex-wrap items-center justify-end gap-2 self-start">
@@ -2361,6 +2364,15 @@ export function Workbench(): ReactElement {
                 busy={busy}
                 runtimeReady={runtimeConnection === 'ready'}
                 hasActiveThread={Boolean(activeThreadId)}
+                contextWindowTokens={runtimeInfo?.capabilities.model.contextWindowTokens}
+                runtimeToolCount={
+                  runtimeInfo
+                    ? runtimeInfo.capabilities.mcp.search?.active
+                      ? runtimeInfo.capabilities.mcp.search.advertisedToolCount
+                      : runtimeInfo.capabilities.mcp.toolCount
+                    : undefined
+                }
+                runtimeSkillCount={runtimeInfo?.capabilities.skills.discoveredSkills}
                 composerModel={
                   route === 'claw'
                     ? clawChannels.find((channel) => channel.id === activeClawChannelId)?.model ?? 'auto'

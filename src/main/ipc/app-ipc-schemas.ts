@@ -94,6 +94,12 @@ export const confirmDialogPayloadSchema = z
   })
   .strict()
 
+export const legacySessionImportPayloadSchema = z
+  .object({
+    sourceDir: defaultPathSchema
+  })
+  .strict()
+
 export const providerProbePayloadSchema = z
   .object({
     baseUrl: trimmedString(MAX_URL_LENGTH),
@@ -230,7 +236,8 @@ const modelProfilePatchSchema = z.object({
     supportedEfforts: z.array(modelReasoningEffortSchema).min(1).max(8),
     defaultEffort: modelReasoningEffortSchema,
     requestProtocol: modelReasoningRequestProtocolSchema
-  }).strict().optional()
+  }).strict().optional(),
+  endpointFormat: modelEndpointFormatSchema.optional()
 }).strict()
 
 const modelProviderPatchSchema = z.object({
@@ -327,6 +334,7 @@ const kunRuntimePatchSchema = z.object({
     summaryInputMaxBytes: z.number().int().positive().max(8 * 1024 * 1024).optional()
   }).strict().optional(),
   runtimeTuning: z.object({
+    streamIdleTimeoutMs: z.number().int().min(0).max(3_600_000).optional(),
     toolStorm: z.object({
       enabled: z.boolean().optional(),
       windowSize: z.number().int().positive().max(128).optional(),
@@ -457,12 +465,28 @@ const writeSelectionAssistPatchSchema = z.object({
   quickActions: z.array(writeQuickActionSchema).max(24).optional()
 }).strict()
 
+const writeTypographyPatchSchema = z.object({
+  fontPreset: z.string().max(32).optional(),
+  customFontFamily: z.string().max(200).optional(),
+  fontSizePx: z.number().optional(),
+  lineHeight: z.number().optional()
+}).strict()
+
+const writeAgentPresetSchema = z.object({
+  id: trimmedString(64),
+  name: z.string().max(64).optional(),
+  emoji: z.string().max(16).optional(),
+  persona: z.string().max(4_000).optional()
+}).strict()
+
 const writeSettingsPatchSchema = z.object({
   defaultWorkspaceRoot: defaultPathSchema,
   activeWorkspaceRoot: defaultPathSchema,
   workspaces: z.array(trimmedString(MAX_PATH_LENGTH)).max(256).optional(),
   inlineCompletion: writeInlineCompletionPatchSchema.optional(),
-  selectionAssist: writeSelectionAssistPatchSchema.optional()
+  selectionAssist: writeSelectionAssistPatchSchema.optional(),
+  typography: writeTypographyPatchSchema.optional(),
+  agentPresets: z.array(writeAgentPresetSchema).max(24).optional()
 }).strict()
 
 const clawSkillPatchSchema = z.object({

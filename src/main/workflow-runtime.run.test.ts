@@ -490,4 +490,48 @@ describe('WorkflowRuntime end-to-end execution', () => {
     expect(run.nodeResults.find((result) => result.nodeId === 'sub')!.error.toLowerCase()).toContain('deep')
     runtime.stop()
   }, 15_000)
+
+  it('webhook trigger fires the workflow with the request body', async () => {
+    const port = 18765
+    const settings = settingsWithWorkflows([
+      buildWorkflow({
+        id: 'wf-wh',
+        name: 'Wh',
+        enabled: true,
+        nodes: [
+          { id: 'w', type: 'webhook-trigger', config: { path: '/hook', method: 'POST' } },
+          {
+            id: 's',
+            type: 'set-fields',
+            config: { fields: [{ key: 'echo', value: '{{json.name}}' }], keepIncoming: false }
+          }
+        ],
+        connections: [{ id: 'e1', source: 'w', sourceHandle: 'out', target: 's', targetHandle: 'in' }]
+      })
+    ])
+    settings.workflow.webhookPort = port
+    const store = createStore(settings)
+    const runtime = createWorkflowRuntime({ store: store as never, runtimeRequest: vi.fn() as never, logError: vi.fn() })
+    runtime.sync(store.read())
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      const response = await fetch(`http://127.0.0.1:${port}/hook`, {
+        method: 'POST',
+        body: JSON.stringify({ name: 'kun' })
+      })
+      const body = (await response.json()) as { ok: boolean; runId: string }
+      expect(response.status).toBe(200)
+      expect(body.ok).toBe(true)
+      await waitFor(async () => {
+        const run = (await store.load()).workflow.workflows[0].runs.find((entry) => entry.id === body.runId)
+        return Boolean(run && run.status !== 'running')
+      }, 5_000)
+      const run = store.read().workflow.workflows[0].runs.find((entry) => entry.id === body.runId)!
+      expect(run.status).toBe('success')
+      const setResult = run.nodeResults.find((result) => result.nodeId === 's')!
+      expect(JSON.parse(setResult.outputJson)).toEqual({ echo: 'kun' })
+    } finally {
+      runtime.stop()
+    }
+  }, 15_000)
 })

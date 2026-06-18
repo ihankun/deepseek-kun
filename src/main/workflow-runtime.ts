@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { URL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import type {
@@ -20,10 +21,13 @@ import { MAX_WORKFLOW_RUNS } from '../shared/app-settings-workflow'
 import {
   SCHEDULER_INTERVAL_MS,
   hasEnabledScheduledTask,
+  parseJsonObject,
+  readRequestBody,
   resolveScheduleModelConfig,
   runPromptViaRuntime,
   sleep,
   summarizeTaskResult,
+  writeJson,
   type ScheduleRuntimeDeps
 } from './schedule-runtime-helpers'
 
@@ -332,6 +336,12 @@ function summarizeRun(results: WorkflowNodeRunResultV1[]): string {
   return `Completed ${results.length} step${results.length === 1 ? '' : 's'}`
 }
 
+function hasEnabledWebhook(settings: AppSettingsV1): boolean {
+  return settings.workflow.workflows.some(
+    (workflow) => workflow.enabled && workflow.nodes.some((node) => node.type === 'webhook-trigger' && !node.disabled)
+  )
+}
+
 // ---------------------------------------------------------------------------
 // WorkflowRuntime
 // ---------------------------------------------------------------------------
@@ -344,6 +354,8 @@ export class WorkflowRuntime {
   /** workflowId -> nodeId -> live status, surfaced to the canvas via status(). */
   private liveNodeStatus = new Map<string, Map<string, WorkflowNodeRunStatus>>()
   private powerSaveBlockerId: number | null = null
+  private webhookServer: Server | null = null
+  private webhookServerKey = ''
 
   constructor(deps: ScheduleRuntimeDeps) {
     this.deps = deps
@@ -352,6 +364,7 @@ export class WorkflowRuntime {
   sync(settings: AppSettingsV1): void {
     this.startScheduler()
     this.syncPowerSaveBlocker(settings)
+    this.syncWebhookServer(settings)
     void this.ensureNextRuns(settings)
   }
 
@@ -361,6 +374,89 @@ export class WorkflowRuntime {
       this.scheduler = null
     }
     this.stopPowerSaveBlocker()
+    this.closeWebhookServer()
+  }
+
+  private syncWebhookServer(settings: AppSettingsV1): void {
+    const shouldListen = settings.workflow.enabled && hasEnabledWebhook(settings)
+    if (!shouldListen) {
+      this.closeWebhookServer()
+      return
+    }
+    const key = String(settings.workflow.webhookPort)
+    if (this.webhookServer && this.webhookServerKey === key) return
+    this.closeWebhookServer()
+    const server = createServer((req, res) => {
+      void this.handleWebhookRequest(req, res)
+    })
+    server.on('error', (error) => {
+      this.deps.logError('workflow-webhook', 'Webhook server failed', {
+        message: error instanceof Error ? error.message : String(error)
+      })
+      if (this.webhookServer === server) this.closeWebhookServer()
+    })
+    // Bind to localhost only — never expose the listener to the network.
+    server.listen(settings.workflow.webhookPort, '127.0.0.1')
+    this.webhookServer = server
+    this.webhookServerKey = key
+  }
+
+  private closeWebhookServer(): void {
+    if (!this.webhookServer) return
+    const server = this.webhookServer
+    this.webhookServer = null
+    this.webhookServerKey = ''
+    server.close()
+  }
+
+  private async handleWebhookRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const settings = await this.deps.store.load()
+      const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
+      const secret = settings.workflow.webhookSecret.trim()
+      if (secret) {
+        const rawHeader = req.headers['x-kun-secret']
+        const headerSecret = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader
+        if (req.headers.authorization !== `Bearer ${secret}` && headerSecret !== secret) {
+          writeJson(res, 401, { ok: false, message: 'Unauthorized.' })
+          return
+        }
+      }
+      const method = req.method ?? 'GET'
+      let match: { workflow: WorkflowV1; nodeId: string } | null = null
+      for (const workflow of settings.workflow.workflows) {
+        if (!workflow.enabled) continue
+        for (const node of workflow.nodes) {
+          if (node.type !== 'webhook-trigger' || node.disabled) continue
+          if (node.config.path !== pathname) continue
+          if (node.config.method !== 'ANY' && node.config.method !== method) continue
+          match = { workflow, nodeId: node.id }
+          break
+        }
+        if (match) break
+      }
+      if (!match) {
+        writeJson(res, 404, { ok: false, message: 'No enabled workflow matches this webhook.' })
+        return
+      }
+      const body = await readRequestBody(req)
+      const parsed = parseJsonObject(body)
+      const runId = randomUUID()
+      void this.runWorkflowInternal(match.workflow, match.nodeId, 'webhook', runId, {
+        json: parsed ?? body,
+        text: body
+      })
+      writeJson(res, 200, { ok: true, runId })
+    } catch (error) {
+      this.deps.logError('workflow-webhook', 'Webhook request failed', {
+        message: error instanceof Error ? error.message : String(error)
+      })
+      try {
+        writeJson(res, 500, { ok: false, message: 'Internal error.' })
+      } catch {
+        /* response already sent */
+      }
+    }
   }
 
   async status(): Promise<WorkflowRuntimeStatus> {
@@ -382,7 +478,8 @@ export class WorkflowRuntime {
     if (this.runningWorkflowIds.has(workflowId)) return { ok: false, message: 'Workflow is already running.' }
     const trigger =
       workflow.nodes.find((node) => node.type === 'manual-trigger') ??
-      workflow.nodes.find((node) => node.type === 'schedule-trigger')
+      workflow.nodes.find((node) => node.type === 'schedule-trigger') ??
+      workflow.nodes.find((node) => node.type === 'webhook-trigger')
     if (!trigger) return { ok: false, message: 'Workflow has no trigger node.' }
     const runId = randomUUID()
     // Fire-and-poll: the UI watches status() for per-node progress.
@@ -508,7 +605,8 @@ export class WorkflowRuntime {
     workflow: WorkflowV1,
     triggerNodeId: string,
     triggerLabel: string,
-    runId = randomUUID()
+    runId = randomUUID(),
+    initialPayload: WorkflowPayload = { json: {}, text: '' }
   ): Promise<WorkflowRunResult> {
     if (this.runningWorkflowIds.has(workflow.id)) {
       return { ok: false, message: 'Workflow is already running.' }
@@ -544,7 +642,7 @@ export class WorkflowRuntime {
     let nodeResults: WorkflowNodeRunResultV1[] = []
     try {
       const settings = await this.deps.store.load()
-      const result = await this.runGraph(workflow, triggerNodeId, { json: {}, text: '' }, {
+      const result = await this.runGraph(workflow, triggerNodeId, initialPayload, {
         settings,
         statusWorkflowId: workflow.id,
         cancelId: workflow.id,
@@ -684,7 +782,7 @@ export class WorkflowRuntime {
           .filter((edge) => delivered.has(edge.id))
           .map((edge) => payloadByEdge.get(edge.id))
           .filter((value): value is WorkflowPayload => Boolean(value))
-        const primary = inputs[0] ?? { json: {}, text: '' }
+        const primary = inputs[0] ?? (nodeId === triggerNodeId ? initialPayload : { json: {}, text: '' })
 
         let outcome: NodeOutcome | null
         if (node.disabled) {
@@ -758,7 +856,9 @@ export class WorkflowRuntime {
     switch (node.type) {
       case 'manual-trigger':
       case 'schedule-trigger':
-        return { payload: { json: {}, text: '' }, message: 'Triggered' }
+      case 'webhook-trigger':
+        // Triggers emit the run's initial payload (e.g. a webhook request body).
+        return { payload, message: 'Triggered' }
       case 'ai-agent': {
         const modelConfig = resolveScheduleModelConfig(
           settings,

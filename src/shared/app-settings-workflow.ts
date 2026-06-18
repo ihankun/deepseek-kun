@@ -12,6 +12,7 @@ import {
   type WorkflowRunV1,
   type WorkflowScheduleV1,
   type WorkflowSwitchRuleV1,
+  type WorkflowWebhookMethod,
   type WorkflowSettingsPatchV1,
   type WorkflowSettingsV1,
   type WorkflowTriggerScheduleKind,
@@ -74,6 +75,18 @@ function normalizeConditionOperator(value: unknown): WorkflowConditionOperator {
 
 function normalizeHttpMethod(value: unknown): WorkflowHttpMethod {
   return HTTP_METHODS.includes(value as WorkflowHttpMethod) ? (value as WorkflowHttpMethod) : 'GET'
+}
+
+function normalizeWebhookPath(value: unknown): string {
+  const raw = asTrimmed(value)
+  if (!raw) return '/webhook'
+  return raw.startsWith('/') ? raw : `/${raw}`
+}
+
+function normalizeWebhookMethod(value: unknown): WorkflowWebhookMethod {
+  return value === 'GET' || value === 'POST' || value === 'PUT' || value === 'PATCH' || value === 'DELETE'
+    ? value
+    : 'ANY'
 }
 
 function normalizeWorkflowSchedule(value: unknown): WorkflowScheduleV1 {
@@ -148,6 +161,12 @@ export function normalizeWorkflowNode(value: unknown, index: number): WorkflowNo
       return { ...base, type: 'manual-trigger', config: {} }
     case 'schedule-trigger':
       return { ...base, type: 'schedule-trigger', config: { schedule: normalizeWorkflowSchedule(config.schedule) } }
+    case 'webhook-trigger':
+      return {
+        ...base,
+        type: 'webhook-trigger',
+        config: { path: normalizeWebhookPath(config.path), method: normalizeWebhookMethod(config.method) }
+      }
     case 'ai-agent':
       return {
         ...base,
@@ -324,6 +343,8 @@ export function defaultWorkflowSettings(): WorkflowSettingsV1 {
     model: '',
     mode: 'agent',
     keepAwake: false,
+    webhookPort: 8799,
+    webhookSecret: '',
     workflows: []
   }
 }
@@ -339,6 +360,8 @@ export function normalizeWorkflowSettings(input: WorkflowSettingsPatchV1 | undef
     model: asTrimmed(source.model),
     mode: normalizeRunMode(source.mode),
     keepAwake: normalizeBoolean(source.keepAwake, defaults.keepAwake),
+    webhookPort: normalizePositiveInteger(source.webhookPort, defaults.webhookPort, 1024, 65_535),
+    webhookSecret: asTrimmed(source.webhookSecret),
     workflows: Array.isArray(source.workflows)
       ? source.workflows.map((workflow, index) => normalizeWorkflow(workflow as Partial<WorkflowV1>, index, now))
       : []

@@ -540,6 +540,7 @@ export type ScheduleSettingsV1 = {
 export type WorkflowNodeKind =
   | 'manual-trigger'
   | 'schedule-trigger'
+  | 'webhook-trigger'
   | 'ai-agent'
   | 'condition'
   | 'switch'
@@ -553,6 +554,7 @@ export type WorkflowNodeKind =
 export const WORKFLOW_NODE_KINDS: readonly WorkflowNodeKind[] = [
   'manual-trigger',
   'schedule-trigger',
+  'webhook-trigger',
   'ai-agent',
   'condition',
   'switch',
@@ -599,6 +601,14 @@ export type WorkflowManualTriggerConfigV1 = Record<string, never>
 
 export type WorkflowScheduleTriggerConfigV1 = {
   schedule: WorkflowScheduleV1
+}
+
+export type WorkflowWebhookMethod = 'ANY' | 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+
+export type WorkflowWebhookTriggerConfigV1 = {
+  /** Path (leading slash) the local webhook listener matches, e.g. "/my-hook". */
+  path: string
+  method: WorkflowWebhookMethod
 }
 
 export type WorkflowAiAgentConfigV1 = {
@@ -684,6 +694,7 @@ export type WorkflowSetFieldsConfigV1 = {
 export type WorkflowNodeConfigByKind = {
   'manual-trigger': WorkflowManualTriggerConfigV1
   'schedule-trigger': WorkflowScheduleTriggerConfigV1
+  'webhook-trigger': WorkflowWebhookTriggerConfigV1
   'ai-agent': WorkflowAiAgentConfigV1
   condition: WorkflowConditionConfigV1
   switch: WorkflowSwitchConfigV1
@@ -767,6 +778,10 @@ export type WorkflowSettingsV1 = {
   model: string
   mode: ScheduleRunMode
   keepAwake: boolean
+  /** Local-only (127.0.0.1) port the webhook-trigger listener binds to. */
+  webhookPort: number
+  /** Optional shared secret required on inbound webhook requests (x-kun-secret / Bearer). */
+  webhookSecret: string
   workflows: WorkflowV1[]
 }
 

@@ -801,6 +801,13 @@ const workflowSubWorkflowConfigSchema = z
   .object({ workflowId: z.string().max(MAX_ID_LENGTH).optional() })
   .strict()
 
+const workflowWebhookTriggerConfigSchema = z
+  .object({
+    path: z.string().max(256).optional(),
+    method: z.enum(['ANY', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional()
+  })
+  .strict()
+
 const workflowNodeBaseShape = {
   id: z.string().max(MAX_ID_LENGTH),
   name: z.string().max(512).optional(),
@@ -815,6 +822,13 @@ const workflowNodePatchSchema = z.discriminatedUnion('type', [
       ...workflowNodeBaseShape,
       type: z.literal('schedule-trigger'),
       config: z.object({ schedule: workflowScheduleSchema.optional() }).strict().optional()
+    })
+    .strict(),
+  z
+    .object({
+      ...workflowNodeBaseShape,
+      type: z.literal('webhook-trigger'),
+      config: workflowWebhookTriggerConfigSchema.optional()
     })
     .strict(),
   z.object({ ...workflowNodeBaseShape, type: z.literal('ai-agent'), config: workflowAiAgentConfigSchema.optional() }).strict(),
@@ -888,6 +902,8 @@ const workflowSettingsPatchSchema = z
     model: optionalTrimmedString(128),
     mode: clawRunModeSchema.optional(),
     keepAwake: z.boolean().optional(),
+    webhookPort: z.number().int().min(1024).max(65_535).optional(),
+    webhookSecret: z.string().max(MAX_BODY_BYTES).optional(),
     workflows: z.array(workflowPatchSchema).max(200).optional()
   })
   .strict()

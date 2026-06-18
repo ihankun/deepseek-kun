@@ -16,6 +16,7 @@ import {
   Split,
   Timer,
   Trash2,
+  Webhook,
   Workflow,
   type LucideIcon
 } from 'lucide-react'
@@ -40,6 +41,7 @@ export const WorkflowNodeActionsContext = createContext<WorkflowNodeActions>({
 export const NODE_ICONS: Record<WorkflowNodeKind, LucideIcon> = {
   'manual-trigger': Hand,
   'schedule-trigger': CalendarClock,
+  'webhook-trigger': Webhook,
   'ai-agent': Brain,
   condition: GitBranch,
   switch: Split,
@@ -76,6 +78,8 @@ function nodeSummary(node: WorkflowNodeV1): string {
       if (s.kind === 'at') return s.atTime ? new Date(s.atTime).toLocaleString() : 'once'
       return 'manual'
     }
+    case 'webhook-trigger':
+      return `${node.config.method} ${node.config.path}`.trim()
     case 'ai-agent':
       return node.config.prompt.trim().slice(0, 60) || node.config.model || 'AI task'
     case 'condition':
@@ -107,7 +111,8 @@ function WorkflowCanvasNode({ id, data, selected }: NodeProps): ReactElement {
   const node = (data as WorkflowFlowNodeData).node
   const Icon = NODE_ICONS[node.type]
   const status = runStatus[id]
-  const isTrigger = node.type === 'manual-trigger' || node.type === 'schedule-trigger'
+  const isTrigger =
+    node.type === 'manual-trigger' || node.type === 'schedule-trigger' || node.type === 'webhook-trigger'
   const isCondition = node.type === 'condition'
   const summary = nodeSummary(node)
 

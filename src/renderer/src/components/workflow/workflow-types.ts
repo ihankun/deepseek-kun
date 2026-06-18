@@ -11,6 +11,7 @@ import type {
 export const WORKFLOW_PALETTE: readonly WorkflowNodeKind[] = [
   'manual-trigger',
   'schedule-trigger',
+  'webhook-trigger',
   'ai-agent',
   'condition',
   'switch',
@@ -24,7 +25,8 @@ export const WORKFLOW_PALETTE: readonly WorkflowNodeKind[] = [
 
 export const TRIGGER_KINDS: ReadonlySet<WorkflowNodeKind> = new Set([
   'manual-trigger',
-  'schedule-trigger'
+  'schedule-trigger',
+  'webhook-trigger'
 ])
 
 export type WorkflowFlowNodeData = {
@@ -56,6 +58,8 @@ export function createWorkflowNode(
         type: 'schedule-trigger',
         config: { schedule: { kind: 'interval', everyMinutes: 60, timeOfDay: '09:00', atTime: '', cron: '' } }
       }
+    case 'webhook-trigger':
+      return { ...base, type: 'webhook-trigger', config: { path: '/webhook', method: 'ANY' } }
     case 'ai-agent':
       return {
         ...base,

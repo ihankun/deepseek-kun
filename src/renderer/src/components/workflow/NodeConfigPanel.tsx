@@ -9,8 +9,11 @@ import {
   type WorkflowHttpMethod,
   type WorkflowNodeRunResultV1,
   type WorkflowNodeV1,
-  type WorkflowTriggerScheduleKind
+  type WorkflowTriggerScheduleKind,
+  type WorkflowWebhookMethod
 } from '@shared/app-settings'
+
+const WEBHOOK_METHODS: WorkflowWebhookMethod[] = ['ANY', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-ds-border bg-ds-card px-3 py-2 text-[13px] text-ds-ink outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/25'
@@ -182,6 +185,40 @@ export function NodeConfigPanel({ node, settings, lastResult, onChange, onDelete
                 />
               </Field>
             ) : null}
+          </>
+        ) : null}
+
+        {node.type === 'webhook-trigger' ? (
+          <>
+            <Field label={t('workflowWebhookMethod')}>
+              <select
+                className={INPUT_CLASS}
+                value={node.config.method}
+                onChange={(event) =>
+                  onChange({ ...node, config: { ...node.config, method: event.target.value as WorkflowWebhookMethod } })
+                }
+              >
+                {WEBHOOK_METHODS.map((method) => (
+                  <option key={method} value={method}>
+                    {method}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={t('workflowWebhookPath')}>
+              <input
+                className={INPUT_CLASS}
+                value={node.config.path}
+                placeholder="/my-hook"
+                onChange={(event) => onChange({ ...node, config: { ...node.config, path: event.target.value } })}
+              />
+            </Field>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[12px] font-medium text-ds-muted">{t('workflowWebhookUrl')}</span>
+              <code className="select-all break-all rounded-lg bg-ds-subtle px-3 py-2 text-[11.5px] text-ds-muted">
+                {`http://127.0.0.1:${settings.workflow.webhookPort}${node.config.path}`}
+              </code>
+            </div>
           </>
         ) : null}
 

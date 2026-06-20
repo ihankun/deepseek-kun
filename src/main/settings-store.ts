@@ -16,6 +16,7 @@ import {
   mergeModelProviderSettings,
   defaultWriteSettings,
   mergeClawSettings,
+  mergeAppBehaviorSettings,
   mergeScheduleSettings,
   mergeWriteSettings,
   normalizeAppBehaviorSettings,
@@ -195,6 +196,7 @@ const defaultSettings = (): AppSettingsV1 => ({
   locale: 'en',
   theme: 'system',
   uiFontScale: 'small',
+  cursorSpotlight: true,
   provider: defaultModelProviderSettings(),
   agents: {
     kun: defaultKunRuntimeSettings()
@@ -231,10 +233,7 @@ function buildMergedSettings(parsed: Partial<AppSettingsV1>): AppSettingsV1 {
     ),
     log: { ...defaults.log, ...migrated.log },
     notifications: { ...defaults.notifications, ...migrated.notifications },
-    appBehavior: normalizeAppBehaviorSettings({
-      ...defaults.appBehavior,
-      ...migrated.appBehavior
-    }),
+    appBehavior: mergeAppBehaviorSettings(defaults.appBehavior, migrated.appBehavior),
     keyboardShortcuts: normalizeKeyboardShortcuts(migrated.keyboardShortcuts),
     write: mergeWriteSettings(defaults.write, migrated.write),
     claw: mergeClawSettings(defaults.claw, migrated.claw),
@@ -257,6 +256,10 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === 'object' && error !== null
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 async function loadDefaultSettings(): Promise<AppSettingsV1> {
   const defaults = normalizeStoredSettings(defaultSettings())
   await ensureWorkspaceRootExists(defaults.workspaceRoot)
@@ -277,6 +280,27 @@ async function writeInvalidSettingsBackup(path: string, raw: string): Promise<st
   } catch {
     return null
   }
+}
+
+async function replaceInvalidSettingsWithDefaults(
+  store: JsonSettingsStore,
+  sourcePath: string,
+  raw: string,
+  reason: string
+): Promise<AppSettingsV1> {
+  const backupPath = await writeInvalidSettingsBackup(sourcePath, raw)
+  const defaults = await loadDefaultSettings()
+  await store.save(defaults)
+  if (backupPath) {
+    console.warn(
+      `[kun-gui] Invalid settings were replaced with defaults (${reason}). Backup: ${backupPath}`
+    )
+  } else {
+    console.warn(
+      `[kun-gui] Invalid settings were replaced with defaults (${reason}). Backup could not be written for ${sourcePath}.`
+    )
+  }
+  return defaults
 }
 
 function compatibleSettingsPaths(currentPath: string): string[] {
@@ -347,30 +371,22 @@ export class JsonSettingsStore {
       throw new Error(`Failed to read settings file ${sourcePath}: ${message}`, { cause: error })
     }
 
-    let parsed: Partial<AppSettingsV1>
+    let parsed: unknown
     try {
-      parsed = JSON.parse(raw) as Partial<AppSettingsV1>
+      parsed = JSON.parse(raw)
     } catch (error) {
       if (error instanceof SyntaxError) {
-        const backupPath = await writeInvalidSettingsBackup(sourcePath, raw)
-        const defaults = await loadDefaultSettings()
-        await this.save(defaults)
-        if (backupPath) {
-          console.warn(
-            `[kun-gui] Invalid settings JSON was replaced with defaults. Backup: ${backupPath}`
-          )
-        } else {
-          console.warn(
-            `[kun-gui] Invalid settings JSON was replaced with defaults. Backup could not be written for ${sourcePath}.`
-          )
-        }
-        return defaults
+        return replaceInvalidSettingsWithDefaults(this, sourcePath, raw, 'invalid JSON')
       }
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(`Failed to parse settings file ${sourcePath}: ${message}`, { cause: error })
     }
 
-    const normalized = normalizeStoredSettings(buildMergedSettings(parsed))
+    if (!isRecord(parsed)) {
+      return replaceInvalidSettingsWithDefaults(this, sourcePath, raw, 'top-level value is not an object')
+    }
+
+    const normalized = normalizeStoredSettings(buildMergedSettings(parsed as Partial<AppSettingsV1>))
     await ensureWorkspaceRootExists(normalized.workspaceRoot)
     await ensureWriteWorkspaceRootsExist(normalized)
     await ensureClawChannelWorkspaceRootsExist(normalized)
@@ -400,10 +416,7 @@ export class JsonSettingsStore {
       provider: mergeModelProviderSettings(cur.provider, providerPatch),
       log: { ...cur.log, ...(partial.log ?? {}) },
       notifications: { ...cur.notifications, ...(partial.notifications ?? {}) },
-      appBehavior: normalizeAppBehaviorSettings({
-        ...cur.appBehavior,
-        ...(partial.appBehavior ?? {})
-      }),
+      appBehavior: mergeAppBehaviorSettings(cur.appBehavior, partial.appBehavior),
       keyboardShortcuts: normalizeKeyboardShortcuts({
         bindings: {
           ...cur.keyboardShortcuts.bindings,

@@ -3,6 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   FloatingComposer,
+  buildResearchPrompt,
   formatGoalElapsedSeconds,
   handleComposerImagePaste,
   imageFilesFromTransfer,
@@ -10,6 +11,7 @@ import {
   parseCompactCommand,
   parseGoalCommand,
   parseNewCommand,
+  parseResearchCommand,
   parseReviewCommand,
   shouldShowGoalFloater
 } from './FloatingComposer'
@@ -31,9 +33,12 @@ import {
   filterWorkspaceFileMentionSuggestions,
   formatComposerFileMentionToken,
   getFileMentionAtCursor,
+  isFileWithinDirectory,
   removeComposerFileMentionToken,
-  replaceFileMentionInInput
+  replaceFileMentionInInput,
+  type ComposerFileReference
 } from '../../lib/composer-file-references'
+import { filesUnderDirectory } from '../../lib/workspace-file-index'
 
 const DEEPSEEK_PROVIDER_GROUP = {
   providerId: 'deepseek',
@@ -92,6 +97,15 @@ describe('FloatingComposer slash commands', () => {
       instructions: 'focus on auth regressions'
     })
     expect(parseReviewCommand('/reviewer')).toBe(false)
+  })
+
+  it('parses research topics and fills the research brief', () => {
+    expect(parseResearchCommand('/research')).toBeNull()
+    expect(parseResearchCommand('/deepresearch cache economics')).toBe('cache economics')
+    expect(parseResearchCommand('/deep-research web + papers')).toBe('web + papers')
+    expect(parseResearchCommand('/researcher')).toBe(false)
+    expect(buildResearchPrompt('Topic: {{topic}}', 'provider cache')).toBe('Topic: provider cache')
+    expect(buildResearchPrompt('Topic: {{topic}}', null)).toBe('Topic: {{topic}}')
   })
 
   it('uses ordinary composer text as a goal draft only when the goal panel is open', () => {
@@ -186,6 +200,54 @@ describe('FloatingComposer file references', () => {
     const replaced = replaceFileMentionInInput('open @doc', mention!, files[2])
     expect(replaced.input).toBe('open @"docs/product plan.md" ')
     expect(removeComposerFileMentionToken(replaced.input, files[2].relativePath)).toBe('open')
+  })
+
+  it('formats, inserts, and removes directory mentions with a trailing slash', () => {
+    expect(formatComposerFileMentionToken('src/components', true)).toBe('@src/components/')
+    expect(formatComposerFileMentionToken('docs/product specs', true)).toBe('@"docs/product specs/"')
+
+    const mention = getFileMentionAtCursor('check @src/comp', 'check @src/comp'.length)
+    expect(mention).not.toBeNull()
+    const replaced = replaceFileMentionInInput('check @src/comp', mention!, {
+      relativePath: 'src/components',
+      type: 'directory'
+    })
+    expect(replaced.input).toBe('check @src/components/ ')
+    expect(removeComposerFileMentionToken(replaced.input, 'src/components', true)).toBe('check')
+  })
+
+  it('keeps a nested file mention intact when removing its parent directory mention', () => {
+    const input = 'review @src/ and @src/App.tsx now'
+    expect(removeComposerFileMentionToken(input, 'src', true)).toBe('review and @src/App.tsx now')
+    // …even when the nested file mention appears before the standalone directory token.
+    const reordered = 'review @src/App.tsx and @src/ now'
+    expect(removeComposerFileMentionToken(reordered, 'src', true)).toBe('review @src/App.tsx and now')
+  })
+
+  it('ranks directories alongside files and favors them for trailing-slash queries', () => {
+    const entries: ComposerFileReference[] = [
+      { path: '/repo/src', relativePath: 'src', name: 'src', type: 'directory' },
+      { path: '/repo/src/App.tsx', relativePath: 'src/App.tsx', name: 'App.tsx', type: 'file' },
+      { path: '/repo/src/index.ts', relativePath: 'src/index.ts', name: 'index.ts', type: 'file' }
+    ]
+    const suggestions = filterWorkspaceFileMentionSuggestions(entries, 'src/')
+    expect(suggestions[0]).toEqual(entries[0])
+    expect(suggestions.map((entry) => entry.relativePath)).toContain('src/App.tsx')
+  })
+
+  it('lists every indexed file beneath a referenced directory', () => {
+    const files: ComposerFileReference[] = [
+      { path: '/repo/src/App.tsx', relativePath: 'src/App.tsx', name: 'App.tsx', type: 'file' },
+      { path: '/repo/src/lib/util.ts', relativePath: 'src/lib/util.ts', name: 'util.ts', type: 'file' },
+      { path: '/repo/docs/readme.md', relativePath: 'docs/readme.md', name: 'readme.md', type: 'file' }
+    ]
+    expect(filesUnderDirectory(files, 'src').map((file) => file.relativePath)).toEqual([
+      'src/App.tsx',
+      'src/lib/util.ts'
+    ])
+    expect(isFileWithinDirectory('src/App.tsx', 'src')).toBe(true)
+    expect(isFileWithinDirectory('srcabc/App.tsx', 'src')).toBe(false)
+    expect(isFileWithinDirectory('docs/readme.md', 'src')).toBe(false)
   })
 
   it('builds a compact prompt from referenced workspace files', () => {
@@ -1065,7 +1127,7 @@ describe('FloatingComposer capability controls', () => {
     )
 
     expect(html).toContain('src/App.tsx')
-    expect(html).toContain('Remove file reference')
+    expect(html).toContain('Remove reference')
     expect(html).toContain('aria-label="Send"')
     expect(html).not.toContain('aria-label="Send" disabled=""')
   })

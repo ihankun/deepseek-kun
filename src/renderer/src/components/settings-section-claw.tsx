@@ -1,6 +1,5 @@
 import type { ReactElement } from 'react'
 import {
-  CLAW_MODEL_IDS,
   type AppSettingsPatch,
   type AppSettingsV1,
   type ClawImAgentProfileV1,
@@ -8,6 +7,7 @@ import {
   type ClawModel
 } from '@shared/app-settings'
 import { SettingsCard, SettingRow, Toggle } from './settings-controls'
+import { clawModelSelectOptions } from '../lib/claw-model-options'
 
 type ClawSettingsContext = {
   t: (key: string, values?: Record<string, unknown>) => string
@@ -156,8 +156,8 @@ export function ClawSettingsSection({ ctx }: { ctx: ClawSettingsContext }): Reac
           form.claw.channels.map((channel) => {
             const name = channel.agentProfile.name.trim() || channel.label
             return (
-              <div key={channel.id} className="px-3 py-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div key={channel.id}>
+                <div className="flex flex-col gap-3 px-3 py-4 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
                     <div className="truncate text-[14px] font-semibold text-ds-ink">{name}</div>
                     <div className="mt-1 text-[12px] text-ds-faint">
@@ -179,7 +179,27 @@ export function ClawSettingsSection({ ctx }: { ctx: ClawSettingsContext }): Reac
                   </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {channel.provider === 'feishu' && (
+                  <SettingRow
+                    title={t('clawFeishuStream')}
+                    description={t('clawFeishuStreamDesc')}
+                    control={
+                      <div className="flex items-center gap-2">
+                        <span className="text-[12px] font-medium text-ds-muted">
+                          {channel.feishuStream === true
+                            ? t('clawManageAgentEnabled')
+                            : t('clawManageAgentDisabled')}
+                        </span>
+                        <Toggle
+                          checked={channel.feishuStream === true}
+                          onChange={(value) => updateChannel(form, update, channel.id, { feishuStream: value })}
+                        />
+                      </div>
+                    }
+                  />
+                )}
+
+                <div className="mt-4 grid gap-3 px-3 md:grid-cols-2">
                   <label className="block min-w-0">
                     <span className="mb-1.5 block text-[12px] font-semibold text-ds-muted">
                       {t('clawManageAgentName')}
@@ -200,7 +220,7 @@ export function ClawSettingsSection({ ctx }: { ctx: ClawSettingsContext }): Reac
                       value={channel.model}
                       onChange={(e) => updateChannel(form, update, channel.id, { model: e.target.value as ClawModel })}
                     >
-                      {CLAW_MODEL_IDS.map((model) => (
+                      {clawModelSelectOptions(form, channel.model).map((model) => (
                         <option key={model} value={model}>{model}</option>
                       ))}
                     </select>
@@ -220,7 +240,7 @@ export function ClawSettingsSection({ ctx }: { ctx: ClawSettingsContext }): Reac
                   </label>
                 </div>
 
-                <div className="mt-4 grid gap-3">
+                <div className="mt-4 grid gap-3 px-3">
                   {profileFields.map((field) => (
                     <label key={field.key} className="block min-w-0">
                       <span className="mb-1.5 block text-[12px] font-semibold text-ds-muted">

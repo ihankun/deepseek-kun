@@ -18,6 +18,7 @@ describe('JsonSettingsStore', () => {
     expect(loaded.appBehavior).toEqual({
       openAtLogin: false,
       startMinimized: false,
+      closeAction: 'ask',
       closeToTray: false
     })
   })
@@ -307,6 +308,47 @@ describe('JsonSettingsStore', () => {
     expect(() => JSON.parse(replaced)).not.toThrow()
   })
 
+  it('backs up non-object settings JSON and replaces it with defaults', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
+    const settingsPath = join(userDataDir, 'kun-settings.json')
+    await writeFile(settingsPath, 'null', 'utf8')
+
+    const store = new JsonSettingsStore(userDataDir)
+    const loaded = await store.load()
+    const files = await readdir(userDataDir)
+    const backupName = files.find((file) => file.startsWith('kun-settings.invalid-'))
+
+    expect(loaded.workspaceRoot.length).toBeGreaterThan(0)
+    expect(backupName).toBeTruthy()
+    expect(await readFile(join(userDataDir, backupName ?? ''), 'utf8')).toBe('null')
+    const replaced = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(replaced.version).toBe(1)
+  })
+
+  it('ignores null entries in persisted Claw channels and schedule tasks', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
+
+    await writeFile(
+      join(userDataDir, 'kun-settings.json'),
+      JSON.stringify({
+        version: 1,
+        claw: {
+          channels: [null]
+        },
+        schedule: {
+          tasks: [null]
+        }
+      }),
+      'utf8'
+    )
+
+    const store = new JsonSettingsStore(userDataDir)
+    const loaded = await store.load()
+
+    expect(loaded.claw.channels).toEqual([])
+    expect(loaded.schedule.tasks).toEqual([])
+  })
+
   it('loads the legacy file name inside the current userData dir and re-saves it under the new name', async () => {
     // userData 整目录迁移后的常见形态:目录已经叫 Kun,里面还是旧文件名。
     const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
@@ -363,24 +405,27 @@ describe('JsonSettingsStore', () => {
       appBehavior: {
         openAtLogin: true,
         startMinimized: true,
-        closeToTray: true
+        closeAction: 'tray'
       }
     })
     const disabled = await store.patch({
       appBehavior: {
-        openAtLogin: false
+        openAtLogin: false,
+        closeToTray: false
       }
     })
 
     expect(enabled.appBehavior).toEqual({
       openAtLogin: true,
       startMinimized: true,
+      closeAction: 'tray',
       closeToTray: true
     })
     expect(disabled.appBehavior).toEqual({
       openAtLogin: false,
       startMinimized: false,
-      closeToTray: true
+      closeAction: 'quit',
+      closeToTray: false
     })
   })
 

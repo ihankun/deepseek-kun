@@ -5,6 +5,7 @@ import {
   getKunRuntimeSettings,
   kunSettingsEnvelope,
   mergeKunRuntimeSettings,
+  mergeAppBehaviorSettings,
   mergeClawSettings,
   mergeModelProviderSettings,
   mergeScheduleSettings,
@@ -57,10 +58,7 @@ export function mergeSettings(current: AppSettingsV1, patch: SettingsPatch): App
       ...safeCurrent.notifications,
       ...(patch.notifications ?? {})
     },
-    appBehavior: normalizeAppBehaviorSettings({
-      ...safeCurrent.appBehavior,
-      ...(patch.appBehavior ?? {})
-    }),
+    appBehavior: mergeAppBehaviorSettings(safeCurrent.appBehavior, patch.appBehavior),
     keyboardShortcuts: normalizeKeyboardShortcuts({
       bindings: {
         ...safeCurrent.keyboardShortcuts.bindings,
@@ -92,6 +90,7 @@ export function coerceRendererSettings(settings: AppSettingsV1): AppSettingsV1 {
     locale: raw.locale === 'zh' ? 'zh' : 'en',
     theme,
     uiFontScale,
+    cursorSpotlight: raw.cursorSpotlight !== false,
     provider: normalizeModelProviderSettings(raw.provider),
     agents: kunSettingsEnvelope(mergeKunRuntimeSettings(defaultKunRuntimeSettings(), getKunRuntimeSettings(settings))),
     workspaceRoot: typeof raw.workspaceRoot === 'string' ? raw.workspaceRoot : DEFAULT_WORKSPACE_ROOT,

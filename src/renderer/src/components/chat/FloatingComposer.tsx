@@ -15,6 +15,8 @@ import {
   BarChart3,
   FileEdit,
   FileText,
+  Folder,
+  GitBranch,
   GitFork,
   ImagePlus,
   ListTodo,
@@ -27,6 +29,7 @@ import {
   Plus,
   PlayCircle,
   RotateCcw,
+  Search,
   SearchCode,
   Send,
   Sparkles,
@@ -37,7 +40,6 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ModelProviderModelGroup } from '@shared/kun-gui-api'
-import type { WorkspaceEntry } from '@shared/workspace-file'
 import type { AttachmentReference, ChatBlock, ReviewTarget } from '../../agent/types'
 import { useChatStore } from '../../store/chat-store'
 import { normalizeWorkspaceRoot } from '../../lib/workspace-path'
@@ -45,14 +47,20 @@ import {
   filterWorkspaceFileMentionSuggestions,
   formatComposerFileMentionToken,
   getFileMentionAtCursor,
-  relativeWorkspacePath,
+  isComposerDirectoryReference,
   removeComposerFileMentionToken,
   replaceFileMentionInInput,
   type ComposerFileMention,
   type ComposerFileReference
 } from '../../lib/composer-file-references'
 import {
+  loadWorkspaceFileIndex,
+  loadWorkspaceMentionPathSuggestions,
+  mergeMentionCandidates
+} from '../../lib/workspace-file-index'
+import {
   COMPACT_COMMAND_ALIASES,
+  buildResearchPrompt,
   getGoalPanelDraftObjective,
   getSlashQuery,
   NEW_COMMAND_ALIASES,
@@ -60,12 +68,14 @@ import {
   parseCompactCommand,
   parseGoalCommand,
   parseNewCommand,
+  parseResearchCommand,
   parseReviewCommand,
+  RESEARCH_COMMAND_ALIASES,
   REVIEW_COMMAND_ALIASES,
   type SlashCommand,
   type SlashCommandId
 } from './floating-composer-commands'
-export { parseBtwCommand, parseCompactCommand, parseGoalCommand, parseNewCommand, parseReviewCommand } from './floating-composer-commands'
+export { buildResearchPrompt, parseBtwCommand, parseCompactCommand, parseGoalCommand, parseNewCommand, parseResearchCommand, parseReviewCommand } from './floating-composer-commands'
 import {
   formatCompactNumber,
   formatCost,
@@ -153,6 +163,9 @@ type Props = {
   onInterrupt: (options?: { discard?: boolean }) => void
   onPlanCommand?: () => void
   onNewCommand?: () => void
+  /** Worktree parallel mode toggle (single-use per new conversation). */
+  useWorktreePool?: boolean
+  onToggleWorktreeMode?: () => void
   onReviewCommand?: (target: ReviewTarget) => void
   onExecutionSettingsChange?: (patch: Partial<ComposerExecutionSettings>) => void
   onOpenChanges?: () => void
@@ -188,11 +201,6 @@ type ComposerTransferItem = {
   kind?: string
   type?: string
   getAsFile?: () => File | null
-}
-
-type WorkspaceFileIndexRecord = {
-  files: ComposerFileReference[]
-  loadedAt: number
 }
 
 export type ComposerImageTransferSource = {
@@ -319,158 +327,6 @@ function normalizedImageFile(file: File, mimeTypeHint?: string): File | null {
     type: mimeType,
     lastModified: file.lastModified
   })
-}
-
-const FILE_MENTION_MAX_DEPTH = 6
-const FILE_MENTION_MAX_DIRECTORIES = 140
-const FILE_MENTION_MAX_FILES = 1200
-const FILE_MENTION_CACHE_TTL_MS = 30_000
-const FILE_MENTION_IGNORED_DIRS = new Set([
-  '.git',
-  '.hg',
-  '.svn',
-  '.next',
-  '.turbo',
-  'build',
-  'coverage',
-  'dist',
-  'node_modules',
-  'out'
-])
-const FILE_MENTION_TEXT_EXTENSIONS = new Set([
-  '.astro',
-  '.bash',
-  '.c',
-  '.cc',
-  '.cjs',
-  '.cpp',
-  '.cs',
-  '.css',
-  '.csv',
-  '.dart',
-  '.env',
-  '.fish',
-  '.go',
-  '.h',
-  '.hpp',
-  '.html',
-  '.ini',
-  '.java',
-  '.js',
-  '.json',
-  '.jsx',
-  '.kt',
-  '.less',
-  '.lock',
-  '.log',
-  '.md',
-  '.mdx',
-  '.mjs',
-  '.php',
-  '.py',
-  '.rb',
-  '.rs',
-  '.sass',
-  '.scss',
-  '.sh',
-  '.sql',
-  '.svelte',
-  '.swift',
-  '.toml',
-  '.ts',
-  '.tsx',
-  '.txt',
-  '.vue',
-  '.xml',
-  '.yaml',
-  '.yml',
-  '.zsh'
-])
-const FILE_MENTION_TEXT_NAMES = new Set([
-  '.env',
-  '.gitignore',
-  'dockerfile',
-  'makefile',
-  'package-lock.json',
-  'pnpm-lock.yaml',
-  'readme'
-])
-const workspaceFileIndexCache = new Map<string, WorkspaceFileIndexRecord | Promise<WorkspaceFileIndexRecord>>()
-
-function isMentionableWorkspaceFile(entry: WorkspaceEntry): boolean {
-  if (entry.type !== 'file') return false
-  const name = entry.name.toLowerCase()
-  if (FILE_MENTION_TEXT_NAMES.has(name)) return true
-  if (!entry.ext) return false
-  return FILE_MENTION_TEXT_EXTENSIONS.has(entry.ext.toLowerCase())
-}
-
-function fileReferenceFromEntry(entry: WorkspaceEntry, workspaceRoot: string): ComposerFileReference {
-  const relativePath = relativeWorkspacePath(entry.path, workspaceRoot)
-  return {
-    path: entry.path,
-    relativePath,
-    name: entry.name
-  }
-}
-
-async function loadWorkspaceFileIndex(workspaceRoot: string): Promise<WorkspaceFileIndexRecord> {
-  const root = workspaceRoot.trim()
-  const cached = workspaceFileIndexCache.get(root)
-  const now = Date.now()
-  if (cached && !(cached instanceof Promise) && now - cached.loadedAt < FILE_MENTION_CACHE_TTL_MS) {
-    return cached
-  }
-  if (cached instanceof Promise) return cached
-
-  const task = (async (): Promise<WorkspaceFileIndexRecord> => {
-    const files: ComposerFileReference[] = []
-    const queue: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }]
-    let visitedDirectories = 0
-
-    while (
-      queue.length > 0 &&
-      visitedDirectories < FILE_MENTION_MAX_DIRECTORIES &&
-      files.length < FILE_MENTION_MAX_FILES
-    ) {
-      const current = queue.shift()
-      if (!current) break
-      visitedDirectories += 1
-      const result = await window.kunGui.listWorkspaceDirectory({
-        workspaceRoot: root,
-        path: current.path
-      })
-      if (!result.ok) continue
-
-      for (const entry of result.entries) {
-        if (entry.type === 'directory') {
-          if (
-            current.depth < FILE_MENTION_MAX_DEPTH &&
-            !FILE_MENTION_IGNORED_DIRS.has(entry.name.toLowerCase())
-          ) {
-            queue.push({ path: entry.path, depth: current.depth + 1 })
-          }
-          continue
-        }
-        if (isMentionableWorkspaceFile(entry)) {
-          files.push(fileReferenceFromEntry(entry, root))
-          if (files.length >= FILE_MENTION_MAX_FILES) break
-        }
-      }
-    }
-
-    return { files, loadedAt: Date.now() }
-  })()
-
-  workspaceFileIndexCache.set(root, task)
-  try {
-    const result = await task
-    workspaceFileIndexCache.set(root, result)
-    return result
-  } catch (error) {
-    workspaceFileIndexCache.delete(root)
-    throw error
-  }
 }
 
 export function imageFilesFromTransfer(source: ComposerImageTransferSource | null | undefined): File[] {
@@ -613,6 +469,8 @@ export function FloatingComposer({
   onInterrupt,
   onPlanCommand,
   onNewCommand,
+  useWorktreePool = false,
+  onToggleWorktreeMode,
   onReviewCommand,
   onExecutionSettingsChange,
   onOpenChanges,
@@ -716,8 +574,9 @@ export function FloatingComposer({
   const canCreateNewThread = runtimeReady && route !== 'claw' && Boolean(effectiveWorkspaceRoot) && Boolean(onNewCommand)
   const canOpenGoalPanel = canCompose && route !== 'claw'
   const canRunReview = canCompose && route !== 'claw' && Boolean(onReviewCommand)
+  const canToggleWorktreeMode = canCompose && route !== 'claw' && Boolean(onToggleWorktreeMode)
   const canOpenComposerMenu = showComposerMenuButton
-    && (canTogglePlanMode || canCreateNewThread || canOpenGoalPanel || canRunReview)
+    && (canTogglePlanMode || canCreateNewThread || canOpenGoalPanel || canRunReview || canToggleWorktreeMode)
   const showToolbarStartControls = showComposerMenuButton
   const showChangeSummary = !compact && route === 'chat' && changedFiles.length > 0
   const effectiveChangedFileStats = changedFileStats ?? changedFiles.reduce(
@@ -781,22 +640,37 @@ export function FloatingComposer({
   const measuredTotalRef = useRef<number | null>(null)
   if (!busy) measuredTotalRef.current = liveMeasuredTotal
   const measuredContextTotal = busy ? measuredTotalRef.current : liveMeasuredTotal
-  // The message estimate only feeds the per-category split (popover) or the
-  // no-measured-total fallback. Never subscribe to `blocks` while streaming with
-  // the popover closed — blocks churn on every delta and re-render the whole
-  // composer. Freeze the last estimate in a ref instead.
+  // The message estimate feeds the per-category split (popover), the
+  // no-measured-total fallback, AND the sanity check that rejects an inflated
+  // measured total (some providers over-report prompt_tokens — see
+  // buildContextCapacity). We therefore need it whenever the gauge is idle, not
+  // just when the popover is open. Never subscribe to `blocks` while streaming
+  // with the popover closed — blocks churn on every delta and re-render the
+  // whole composer; the frozen ref is good enough for that transient window.
   const needMessageEstimate =
-    canShowContextCapacity && (contextCapacityOpen || measuredContextTotal == null)
+    canShowContextCapacity && (contextCapacityOpen || measuredContextTotal == null || !busy)
   const subscribeContextBlocks = needMessageEstimate && (contextCapacityOpen || !busy)
   const contextBlocks = useChatStore((s) => (subscribeContextBlocks ? s.blocks : EMPTY_CONTEXT_BLOCKS))
   const conversationTokensRef = useRef(0)
   const conversationTokens = useMemo(() => {
     if (!subscribeContextBlocks) return conversationTokensRef.current
+    // Only the slice from the most recent compaction onward is actually re-sent
+    // to the model — the runtime folds everything before the latest compaction
+    // summary into it (effective history after the latest compaction). Counting the full
+    // visible history would over-state usage and hide the effect of compaction.
+    let startIndex = 0
+    for (let i = contextBlocks.length - 1; i >= 0; i -= 1) {
+      if (contextBlocks[i]?.kind === 'compaction') {
+        startIndex = i
+        break
+      }
+    }
     // Cache per block: block identity is preserved for unchanged history across
     // streaming updates, so only the block that changed is re-estimated.
     const cache = messageTokenCacheRef.current
     let sum = 0
-    for (const block of contextBlocks) {
+    for (let i = startIndex; i < contextBlocks.length; i += 1) {
+      const block = contextBlocks[i]!
       let cached = cache.get(block)
       if (cached === undefined) {
         cached = estimateBlockTokens(block)
@@ -851,7 +725,9 @@ export function FloatingComposer({
           ? clawHasInboundConversation
             ? t('clawComposerHint')
             : t('clawComposerHintNeedsInbound')
-          : t('composerSlashHint')
+          : useWorktreePool
+            ? t('composerWorktreeModeHint')
+            : t('composerSlashHint')
   const slashCommands = useMemo<SlashCommand[]>(() => {
     const threadActionDisabled = !runtimeReady || busy || !activeThreadId
     const goalActionDisabled = !canOpenGoalPanel
@@ -865,6 +741,14 @@ export function FloatingComposer({
         keywords: ['create', 'new', 'thread', 'chat', '会话', '新建', ...NEW_COMMAND_ALIASES],
         icon: <Plus className="h-4 w-4" strokeWidth={1.9} />,
         disabled: !canCreateNewThread
+      })
+      commands.push({
+        id: 'research',
+        title: t('slashCommandResearchTitle'),
+        description: t('slashCommandResearchDescription'),
+        keywords: ['research', 'deep', 'web', 'sources', 'papers', 'evidence', ...RESEARCH_COMMAND_ALIASES],
+        icon: <Search className="h-4 w-4" strokeWidth={1.9} />,
+        disabled: !runtimeReady
       })
     }
     if (onPlanCommand) {
@@ -1098,13 +982,24 @@ export function FloatingComposer({
     }
 
     let cancelled = false
+    const query = activeFileMention.query
     const timer = window.setTimeout(() => {
       setFileMentionLoading(true)
-      void loadWorkspaceFileIndex(effectiveWorkspaceRoot)
-        .then((index) => {
+      // Resolve the index and any deep path-mention target in parallel so a
+      // deeply nested file the bounded index never reached still resolves
+      // (issue #340).
+      void Promise.all([
+        loadWorkspaceFileIndex(effectiveWorkspaceRoot),
+        loadWorkspaceMentionPathSuggestions(effectiveWorkspaceRoot, query).catch(() => [])
+      ])
+        .then(([index, pathSuggestions]) => {
           if (cancelled) return
+          const candidates = mergeMentionCandidates(
+            [...index.directories, ...index.files],
+            pathSuggestions
+          )
           setFileMentionSuggestions(
-            filterWorkspaceFileMentionSuggestions(index.files, activeFileMention.query, fileReferences)
+            filterWorkspaceFileMentionSuggestions(candidates, query, fileReferences)
           )
         })
         .catch(() => {
@@ -1221,6 +1116,12 @@ export function FloatingComposer({
       draft.focusComposer()
       return
     }
+    if (commandId === 'research') {
+      setMode('agent')
+      setInput(buildResearchPrompt(t('slashCommandResearchPrompt'), null))
+      draft.focusComposer()
+      return
+    }
     if (commandId === 'review' && onReviewCommand) {
       setInput('')
       void onReviewCommand({ kind: 'uncommittedChanges' })
@@ -1330,6 +1231,13 @@ export function FloatingComposer({
     draft.focusComposer()
   }
 
+  const handleWorktreeToolbarClick = (): void => {
+    if (!onToggleWorktreeMode) return
+    setComposerMenuOpen(false)
+    onToggleWorktreeMode()
+    draft.focusComposer()
+  }
+
   const syncComposerCursor = (element = draft.textareaRef.current): void => {
     if (!element) return
     setComposerCursor(element.selectionStart ?? input.length)
@@ -1350,9 +1258,13 @@ export function FloatingComposer({
     })
   }
 
-  const removeFileReference = (relativePath: string): void => {
-    onRemoveFileReference?.(relativePath)
-    const nextInput = removeComposerFileMentionToken(input, relativePath)
+  const removeFileReference = (reference: ComposerFileReference): void => {
+    onRemoveFileReference?.(reference.relativePath)
+    const nextInput = removeComposerFileMentionToken(
+      input,
+      reference.relativePath,
+      isComposerDirectoryReference(reference)
+    )
     if (nextInput !== input) {
       setInput(nextInput)
       window.requestAnimationFrame(() => syncComposerCursor())
@@ -1386,6 +1298,15 @@ export function FloatingComposer({
       if (command?.disabled) return
       setInput('')
       void compactActiveThread(compactCommand.reason)
+      draft.focusComposer()
+      return
+    }
+    const researchTopic = parseResearchCommand(input)
+    if (researchTopic !== false) {
+      const command = slashCommands.find((item) => item.id === 'research')
+      if (command?.disabled) return
+      setMode('agent')
+      setInput(buildResearchPrompt(t('slashCommandResearchPrompt'), researchTopic))
       draft.focusComposer()
       return
     }
@@ -1724,6 +1645,32 @@ export function FloatingComposer({
                 />
               </span>
             </button>
+            {canToggleWorktreeMode ? (
+              <button
+                type="button"
+                disabled={!canToggleWorktreeMode}
+                onClick={handleWorktreeToolbarClick}
+                className="ds-no-drag flex h-8 w-full items-center gap-2 px-3 text-left transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ds-muted"
+              >
+                <GitBranch className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} />
+                <span className="min-w-0 flex-1 truncate">{t('composerMenuWorktreeMode')}</span>
+                <span
+                  role="switch"
+                  aria-checked={useWorktreePool}
+                  className={`relative h-5 w-9 shrink-0 rounded-full ring-1 transition ${
+                    useWorktreePool
+                      ? 'bg-accent ring-accent/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)]'
+                      : 'bg-ds-border-muted ring-ds-border-muted'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white ring-1 ring-black/5 transition ${
+                      useWorktreePool ? 'translate-x-[17px]' : 'translate-x-0.5'
+                    } shadow-[0_1px_4px_rgba(20,47,95,0.28)]`}
+                  />
+                </span>
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -1798,10 +1745,13 @@ export function FloatingComposer({
             {fileMentionSuggestions.length > 0 ? (
               <div className="flex max-h-[min(280px,calc(100vh-260px))] flex-col gap-0.5 overflow-y-auto pr-1">
                 {fileMentionSuggestions.map((reference) => {
-                  const active = highlightedFileMention?.relativePath === reference.relativePath
+                  const isDirectory = isComposerDirectoryReference(reference)
+                  const active =
+                    highlightedFileMention?.relativePath === reference.relativePath &&
+                    highlightedFileMention?.type === reference.type
                   return (
                     <button
-                      key={reference.relativePath}
+                      key={`${reference.type ?? 'file'}:${reference.relativePath}`}
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => applyFileMention(reference)}
@@ -1816,18 +1766,22 @@ export function FloatingComposer({
                           active ? 'bg-white text-accent shadow-sm dark:bg-ds-card' : 'bg-ds-hover text-ds-muted'
                         }`}
                       >
-                        <FileText className="h-4 w-4" strokeWidth={1.8} />
+                        {isDirectory ? (
+                          <Folder className="h-4 w-4" strokeWidth={1.8} />
+                        ) : (
+                          <FileText className="h-4 w-4" strokeWidth={1.8} />
+                        )}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[13.5px] font-semibold leading-5 text-inherit">
-                          {reference.name}
+                          {isDirectory ? `${reference.name}/` : reference.name}
                         </span>
                         <span className="mt-0.5 block truncate text-[12px] leading-4 text-ds-faint">
-                          {reference.relativePath}
+                          {isDirectory ? `${reference.relativePath}/` : reference.relativePath}
                         </span>
                       </span>
                       <span className="hidden max-w-[170px] shrink-0 truncate rounded-full border border-ds-border-muted px-2 py-0.5 text-[10.5px] font-semibold leading-4 text-ds-faint sm:block">
-                        {formatComposerFileMentionToken(reference.relativePath)}
+                        {formatComposerFileMentionToken(reference.relativePath, isDirectory)}
                       </span>
                     </button>
                   )
@@ -2013,27 +1967,35 @@ export function FloatingComposer({
           />
           {fileReferences.length > 0 ? (
             <div className="flex flex-wrap items-center gap-2 px-1">
-              {fileReferences.map((reference) => (
-                <span
-                  key={reference.relativePath}
-                  className="ds-no-drag inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-ds-border-muted bg-ds-card/80 px-2 text-[12px] font-medium text-ds-muted"
-                  title={reference.relativePath}
-                >
-                  <FileText className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
-                  <span className="max-w-52 truncate">{reference.relativePath}</span>
-                  {onRemoveFileReference ? (
-                    <button
-                      type="button"
-                      onClick={() => removeFileReference(reference.relativePath)}
-                      className="rounded-full p-0.5 text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
-                      aria-label={t('composerRemoveFileReference')}
-                      title={t('composerRemoveFileReference')}
-                    >
-                      <X className="h-3 w-3" strokeWidth={2} />
-                    </button>
-                  ) : null}
-                </span>
-              ))}
+              {fileReferences.map((reference) => {
+                const isDirectory = isComposerDirectoryReference(reference)
+                const displayPath = isDirectory ? `${reference.relativePath}/` : reference.relativePath
+                return (
+                  <span
+                    key={`${reference.type ?? 'file'}:${reference.relativePath}`}
+                    className="ds-no-drag inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-ds-border-muted bg-ds-card/80 px-2 text-[12px] font-medium text-ds-muted"
+                    title={displayPath}
+                  >
+                    {isDirectory ? (
+                      <Folder className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+                    ) : (
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+                    )}
+                    <span className="max-w-52 truncate">{displayPath}</span>
+                    {onRemoveFileReference ? (
+                      <button
+                        type="button"
+                        onClick={() => removeFileReference(reference)}
+                        className="rounded-full p-0.5 text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                        aria-label={t('composerRemoveFileReference')}
+                        title={t('composerRemoveFileReference')}
+                      >
+                        <X className="h-3 w-3" strokeWidth={2} />
+                      </button>
+                    ) : null}
+                  </span>
+                )
+              })}
             </div>
           ) : null}
           {attachments.length > 0 || attachmentUploadError ? (
@@ -2337,12 +2299,16 @@ export function FloatingComposer({
                         </span>
                       </>
                     ) : null}
-                    <span className="ds-composer-usage-cache-separator text-ds-faint">·</span>
-                    <span className="ds-composer-usage-cache shrink-0 truncate tabular-nums">
-                      {t('sessionUsageCache', {
-                        cache: formatPercent(primaryCacheHitRate(threadUsage))
-                      })}
-                    </span>
+                    {threadUsage.turns > 1 ? (
+                      <>
+                        <span className="ds-composer-usage-cache-separator text-ds-faint">·</span>
+                        <span className="ds-composer-usage-cache shrink-0 truncate tabular-nums">
+                          {t('sessionUsageCache', {
+                            cache: formatPercent(primaryCacheHitRate(threadUsage))
+                          })}
+                        </span>
+                      </>
+                    ) : null}
                     <span className="ds-composer-usage-turns-separator text-ds-faint">·</span>
                     <span className="ds-composer-usage-turns shrink-0 truncate tabular-nums">
                       {t('sessionUsageTurns', { turns: threadUsage.turns })}

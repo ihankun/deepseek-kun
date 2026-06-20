@@ -21,6 +21,7 @@ import {
   getModelProviderPreset,
   defaultKeyboardShortcuts,
   modelProviderPresetProfile,
+  mergeAppBehaviorSettings,
   mergeWriteSettings,
   normalizeWriteSettings,
   normalizeWriteAgentPresets,
@@ -199,9 +200,9 @@ describe('kun defaults', () => {
         sqlitePath: ''
       },
       contextCompaction: {
-        defaultSoftThreshold: 16000,
-        defaultHardThreshold: 24000,
-        summaryMode: 'heuristic',
+        defaultSoftThreshold: 96000,
+        defaultHardThreshold: 108800,
+        summaryMode: 'model',
         summaryTimeoutMs: 15000,
         summaryMaxTokens: 1200,
         summaryInputMaxBytes: 98304
@@ -231,6 +232,7 @@ describe('app behavior settings', () => {
     expect(normalizeAppSettings(raw).appBehavior).toEqual({
       openAtLogin: false,
       startMinimized: false,
+      closeAction: 'ask',
       closeToTray: false
     })
   })
@@ -248,8 +250,33 @@ describe('app behavior settings', () => {
     expect(normalized.appBehavior).toEqual({
       openAtLogin: false,
       startMinimized: false,
+      closeAction: 'tray',
       closeToTray: true
     })
+  })
+
+  it('maps legacy closeToTray patches to explicit close actions', () => {
+    const current = normalizeAppSettings({
+      ...settings(),
+      appBehavior: undefined
+    } as unknown as AppSettingsV1)
+
+    expect(current.appBehavior.closeAction).toBe('ask')
+    expect(mergeAppBehaviorSettings(current.appBehavior, { closeToTray: true }).closeAction).toBe('tray')
+    expect(mergeAppBehaviorSettings(current.appBehavior, { closeToTray: false }).closeAction).toBe('quit')
+  })
+})
+
+describe('cursor spotlight settings', () => {
+  it('defaults the interaction effect on and preserves an explicit opt-out', () => {
+    expect(normalizeAppSettings({
+      ...settings(),
+      cursorSpotlight: undefined
+    }).cursorSpotlight).toBe(true)
+    expect(normalizeAppSettings({
+      ...settings(),
+      cursorSpotlight: false
+    }).cursorSpotlight).toBe(false)
   })
 })
 
@@ -338,6 +365,35 @@ describe('claw settings', () => {
 
     expect(normalized.claw.channels[0].welcomeSentAt).toBe('2026-06-10T00:00:00.000Z')
     expect(normalized.claw.channels[1]).not.toHaveProperty('welcomeSentAt')
+  })
+
+  it('defaults per-channel ClawImChannelV1.feishuStream to false when missing on old settings', () => {
+    const defaults = defaultClawSettings()
+    const legacyChannel = { ...defaults.channels[0], id: 'channel_legacy' }
+    delete (legacyChannel as Partial<typeof legacyChannel>).feishuStream
+    const normalized = normalizeAppSettings({
+      ...settings(),
+      claw: {
+        ...defaults,
+        channels: [legacyChannel as typeof defaults.channels[0]]
+      }
+    })
+
+    expect(normalized.claw.channels[0].feishuStream).toBe(false)
+  })
+
+  it('preserves ClawImChannelV1.feishuStream=true when explicitly set on old settings', () => {
+    const defaults = defaultClawSettings()
+    const channelWithStream = { ...defaults.channels[0], id: 'channel_stream', feishuStream: true }
+    const normalized = normalizeAppSettings({
+      ...settings(),
+      claw: {
+        ...defaults,
+        channels: [channelWithStream as typeof defaults.channels[0]]
+      }
+    })
+
+    expect(normalized.claw.channels[0].feishuStream).toBe(true)
   })
 })
 
@@ -440,7 +496,7 @@ describe('mergeKunRuntimeSettings', () => {
     expect(next.storage.sqlitePath).toBe('/tmp/kun.sqlite3')
     expect(next.contextCompaction.defaultSoftThreshold).toBe(64000)
     expect(next.contextCompaction.defaultHardThreshold).toBe(64000)
-    expect(next.contextCompaction.summaryMode).toBe('heuristic')
+    expect(next.contextCompaction.summaryMode).toBe('model')
     expect(next.runtimeTuning.toolStorm.enabled).toBe(true)
     expect(next.runtimeTuning.toolStorm.windowSize).toBe(current.runtimeTuning.toolStorm.windowSize)
     expect(next.runtimeTuning.toolStorm.threshold).toBe(5)
@@ -1076,7 +1132,11 @@ describe('write selection assist settings', () => {
     expect(write.selectionAssist.quickActions).toEqual([
       { id: 'polish', label: '', prompt: '', mode: 'chat' },
       { id: 'explain', label: '', prompt: '', mode: 'chat' },
-      { id: 'reformat', label: '', prompt: '', mode: 'edit' }
+      { id: 'reformat', label: '', prompt: '', mode: 'edit' },
+      { id: 'distill', label: '', prompt: '', mode: 'chat' },
+      { id: 'bolder', label: '', prompt: '', mode: 'chat' },
+      { id: 'quieter', label: '', prompt: '', mode: 'chat' },
+      { id: 'critique', label: '', prompt: '', mode: 'chat' }
     ])
   })
 

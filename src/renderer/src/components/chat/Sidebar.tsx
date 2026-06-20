@@ -40,7 +40,6 @@ type Props = {
   threadSearch: string
   showArchivedThreads: boolean
   onThreadSearchChange: (query: string) => void
-  onShowArchivedThreadsChange: (show: boolean) => void
   onSelectThread: (id: string) => void
   onRenameThread: (id: string, title: string) => Promise<void>
   onArchiveThread: (id: string) => Promise<void>
@@ -70,7 +69,6 @@ export function Sidebar({
   threadSearch,
   showArchivedThreads,
   onThreadSearchChange,
-  onShowArchivedThreadsChange,
   onSelectThread,
   onRenameThread,
   onArchiveThread,
@@ -103,7 +101,6 @@ export function Sidebar({
   const addClawChannel = useChatStore((s) => s.addClawChannel)
   const deleteClawChannel = useChatStore((s) => s.deleteClawChannel)
   const resetClawChannelSession = useChatStore((s) => s.resetClawChannelSession)
-
   const [imDialogMode, setImDialogMode] = useState<ClawImDialogMode | null>(null)
 
   const activeClawChannel = useMemo(
@@ -237,7 +234,6 @@ export function Sidebar({
           onDeleteThread={onDeleteThread}
           onRestoreThread={onRestoreThread}
           onSearchQueryChange={onThreadSearchChange}
-          onShowArchivedChange={onShowArchivedThreadsChange}
           t={t}
         />
       ) : (
@@ -264,7 +260,6 @@ export function Sidebar({
         onDeleteThread={onDeleteThread}
         onRestoreThread={onRestoreThread}
         onSearchQueryChange={onThreadSearchChange}
-        onShowArchivedChange={onShowArchivedThreadsChange}
         t={t}
       />
       )}
@@ -307,6 +302,7 @@ function FocusModeToggle({
   return (
     <button
       type="button"
+      data-cursor-spotlight-target
       role="switch"
       aria-checked={enabled}
       aria-label={ariaLabel}

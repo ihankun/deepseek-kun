@@ -7,6 +7,8 @@ import {
   type GuiUpdateConfigV1,
   type NotificationConfigV1,
   type ScheduleSettingsPatchV1,
+  WINDOW_CLOSE_ACTIONS,
+  type WindowCloseAction,
   type WriteSettingsPatchV1
 } from './app-settings-types'
 import { normalizeKeyboardShortcuts, type KeyboardShortcutsConfigV1 } from './keyboard-shortcuts'
@@ -67,6 +69,7 @@ export function normalizeAppSettings(settings: AppSettingsV1): AppSettingsV1 {
       maybeSettings.uiFontScale === 'large'
         ? maybeSettings.uiFontScale
         : 'small',
+    cursorSpotlight: maybeSettings.cursorSpotlight !== false,
     provider: providerSettings,
     agents: kunSettingsEnvelope(mergeKunRuntimeSettings(defaultKunRuntimeSettings(), {
       ...runtime,
@@ -108,11 +111,37 @@ export function normalizeAppBehaviorSettings(
   settings?: Partial<AppBehaviorConfigV1>
 ): AppBehaviorConfigV1 {
   const openAtLogin = settings?.openAtLogin === true
+  const closeAction = normalizeWindowCloseAction(settings?.closeAction)
+    ?? (settings?.closeToTray === true ? 'tray' : 'ask')
   return {
     openAtLogin,
     startMinimized: openAtLogin && settings?.startMinimized === true,
-    closeToTray: settings?.closeToTray === true
+    closeAction,
+    closeToTray: closeAction === 'tray'
   }
+}
+
+export function normalizeWindowCloseAction(value: unknown): WindowCloseAction | null {
+  return typeof value === 'string' && WINDOW_CLOSE_ACTIONS.includes(value as WindowCloseAction)
+    ? value as WindowCloseAction
+    : null
+}
+
+export function mergeAppBehaviorSettings(
+  current: AppBehaviorConfigV1,
+  patch?: Partial<AppBehaviorConfigV1>
+): AppBehaviorConfigV1 {
+  const translatedPatch: Partial<AppBehaviorConfigV1> | undefined =
+    patch && patch.closeAction === undefined && patch.closeToTray !== undefined
+      ? {
+          ...patch,
+          closeAction: patch.closeToTray ? 'tray' : 'quit'
+        }
+      : patch
+  return normalizeAppBehaviorSettings({
+    ...current,
+    ...(translatedPatch ?? {})
+  })
 }
 
 function shouldMigrateLegacySettings(settings: AppSettingsV1): boolean {

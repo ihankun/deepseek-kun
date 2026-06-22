@@ -235,18 +235,25 @@ export function useWorkbenchPlanController({
       activeThreadId: currentChatState.activeThreadId,
       existingRelativePaths: await readExistingPlanRelativePaths(targetWorkspaceRoot)
     }).guiPlan
+    // Tag the in-flight plan turn with the thread it belongs to BEFORE awaiting
+    // sendMessage. A fast response can land a create_plan block in `blocks`
+    // before this Promise resolves; if we tagged only after the await, the
+    // auto-open effect would see a null marker in that window and never open.
+    // For a brand-new chat the id is null here and gets re-tagged below after
+    // sendMessage creates the thread. A mid-await thread switch deliberately
+    // leaves the original tag intact so the auto-open effect rejects it as a
+    // cross-thread leak (see shouldAutoOpenPlanPanel).
+    const initialActiveThreadId = currentChatState.activeThreadId
+    planTurnInFlightThreadIdRef.current = initialActiveThreadId
     const sent = await sendMessage(text, 'plan', {
       ...messageOverrides,
       guiPlan
     })
-    // Tag the in-flight plan turn with the thread it belongs to. The id is
-    // resolved only after sendMessage, since a brand-new chat creates the
-    // thread during the send. The auto-open effect honors this marker only
-    // while that same thread is still active, so switching threads mid-turn
-    // can never pop open another thread's plan panel.
-    planTurnInFlightThreadIdRef.current = sent
-      ? useChatStore.getState().activeThreadId ?? null
-      : null
+    if (!sent) {
+      planTurnInFlightThreadIdRef.current = null
+    } else if (initialActiveThreadId === null) {
+      planTurnInFlightThreadIdRef.current = useChatStore.getState().activeThreadId ?? null
+    }
     return sent
   }
 

@@ -17,6 +17,7 @@ import type {
 
 export type ModelProviderPresetId =
   | 'litellm'
+  | 'longcat'
   | 'zhipu-coding-plan'
   | 'zai-coding-plan'
   | 'kimi-code'
@@ -28,6 +29,7 @@ export type ModelProviderPresetId =
   | 'minimax'
   | 'aliyun'
   | 'tencentcloud'
+  | 'vercel-ai-gateway'
 
 export const TOKEN_PLAN_PROVIDER_ID_SUFFIX = '-token-plan'
 
@@ -178,6 +180,7 @@ const ZHIPU_CODING_PLAN_MODELS = [
 ]
 
 const ZAI_CODING_PLAN_MODELS = [
+  'glm-5.2',
   'glm-5.1',
   'glm-5',
   'glm-5-turbo',
@@ -205,11 +208,23 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     apiKeyUrl: 'https://docs.litellm.ai/docs/proxy/quick_start'
   },
   {
+    id: 'longcat',
+    name: 'LongCat',
+    baseUrl: 'https://api.longcat.chat/openai',
+    endpointFormat: 'chat_completions',
+    models: ['LongCat-2.0-Preview'],
+    modelProfiles: {
+      'LongCat-2.0-Preview': textChatProfile(1_000_000)
+    },
+    docsUrl: 'https://longcat.chat/platform/docs/zh/',
+    apiKeyUrl: 'https://longcat.chat/platform/'
+  },
+  {
     id: 'zhipu-coding-plan',
     name: 'Zhipu Coding Plan',
     category: 'subscription',
-    baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
-    endpointFormat: 'chat_completions',
+    baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+    endpointFormat: 'custom_endpoint',
     models: [...ZHIPU_CODING_PLAN_MODELS],
     modelProfiles: {
       'glm-5.2': textChatProfile(1_000_000, GLM_REASONING),
@@ -225,10 +240,11 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     id: 'zai-coding-plan',
     name: 'Z.ai Coding Plan',
     category: 'subscription',
-    baseUrl: 'https://api.z.ai/api/coding/paas/v4',
-    endpointFormat: 'chat_completions',
+    baseUrl: 'https://api.z.ai/api/coding/paas/v4/chat/completions',
+    endpointFormat: 'custom_endpoint',
     models: [...ZAI_CODING_PLAN_MODELS],
     modelProfiles: {
+      'glm-5.2': textChatProfile(1_000_000, GLM_REASONING),
       'glm-5.1': textChatProfile(200_000, GLM_REASONING),
       'glm-5': textChatProfile(200_000, GLM_REASONING),
       'glm-5-turbo': textChatProfile(200_000, GLM_REASONING),
@@ -363,16 +379,14 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
       'mimo-v2.5-pro',
       'mimo-v2.5',
       'mimo-v2-pro',
-      'mimo-v2-omni',
-      'mimo-v2-flash'
+      'mimo-v2-omni'
     ],
     modelProfiles: {
       'mimo-v2.5-pro-ultraspeed': xiaomiTextChatProfile(1_000_000),
       'mimo-v2.5-pro': xiaomiTextChatProfile(1_000_000),
       'mimo-v2.5': xiaomiVisionChatProfile(1_000_000),
       'mimo-v2-pro': xiaomiTextChatProfile(1_000_000),
-      'mimo-v2-omni': xiaomiVisionChatProfile(256_000),
-      'mimo-v2-flash': xiaomiTextChatProfile(256_000)
+      'mimo-v2-omni': xiaomiVisionChatProfile(256_000)
     },
     speech: {
       protocol: 'mimo-asr',
@@ -397,16 +411,14 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
         'mimo-v2.5-pro',
         'mimo-v2.5',
         'mimo-v2-pro',
-        'mimo-v2-omni',
-        'mimo-v2-flash'
+        'mimo-v2-omni'
       ],
       modelProfiles: {
         'mimo-v2.5-pro-ultraspeed': xiaomiTextChatProfile(1_000_000),
         'mimo-v2.5-pro': xiaomiTextChatProfile(1_000_000),
         'mimo-v2.5': xiaomiVisionChatProfile(1_000_000),
         'mimo-v2-pro': xiaomiTextChatProfile(1_000_000),
-        'mimo-v2-omni': xiaomiVisionChatProfile(256_000),
-        'mimo-v2-flash': xiaomiTextChatProfile(256_000)
+        'mimo-v2-omni': xiaomiVisionChatProfile(256_000)
       },
       speech: {
         protocol: 'mimo-asr',
@@ -599,6 +611,15 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     },
     docsUrl: 'https://cloud.tencent.com/document/product/1729/111006',
     apiKeyUrl: 'https://console.cloud.tencent.com/hunyuan/start'
+  },
+  {
+    id: 'vercel-ai-gateway',
+    name: 'Vercel AI Gateway',
+    baseUrl: 'https://ai-gateway.vercel.sh/v1',
+    endpointFormat: 'chat_completions',
+    models: [],
+    docsUrl: 'https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions',
+    apiKeyUrl: 'https://vercel.com/ai-gateway'
   }
 ]
 

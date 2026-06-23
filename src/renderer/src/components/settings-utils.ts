@@ -1,5 +1,7 @@
 import {
+  DEFAULT_LOG_RETENTION_DAYS,
   DEFAULT_GUI_UPDATE_CHANNEL,
+  MIN_KUN_LOCAL_PORT,
   defaultKunRuntimeSettings,
   applyKunRuntimePatch,
   getKunRuntimeSettings,
@@ -9,14 +11,19 @@ import {
   mergeClawSettings,
   mergeModelProviderSettings,
   mergeScheduleSettings,
+  mergeWorkflowSettings,
   mergeWriteSettings,
+  mergeTerminalSettings,
   normalizeAppBehaviorSettings,
   normalizeClawSettings,
+  normalizeCursorSpotlightColor,
   normalizeGuiUpdateChannel,
   normalizeKeyboardShortcuts,
   normalizeModelProviderSettings,
   normalizeScheduleSettings,
+  normalizeWorkflowSettings,
   normalizeWriteSettings,
+  normalizeTerminalSettings,
   type AppSettingsPatch,
   type AppSettingsV1
 } from '@shared/app-settings'
@@ -40,7 +47,7 @@ export function listSettingsText(values: string[]): string {
 
 export function hasValidPort(settings: AppSettingsV1): boolean {
   const port = getKunRuntimeSettings(settings).port
-  return Number.isFinite(port) && port >= 1 && port <= 65535
+  return Number.isFinite(port) && port >= MIN_KUN_LOCAL_PORT && port <= 65535
 }
 
 export function mergeSettings(current: AppSettingsV1, patch: SettingsPatch): AppSettingsV1 {
@@ -68,6 +75,8 @@ export function mergeSettings(current: AppSettingsV1, patch: SettingsPatch): App
     write: mergeWriteSettings(safeCurrent.write, patch.write),
     claw: mergeClawSettings(safeCurrent.claw, patch.claw),
     schedule: mergeScheduleSettings(safeCurrent.schedule, patch.schedule),
+    workflow: mergeWorkflowSettings(safeCurrent.workflow, patch.workflow),
+    terminal: mergeTerminalSettings(safeCurrent.terminal, patch.terminal),
     guiUpdate: {
       ...safeCurrent.guiUpdate,
       ...(patch.guiUpdate ?? {})
@@ -91,12 +100,15 @@ export function coerceRendererSettings(settings: AppSettingsV1): AppSettingsV1 {
     theme,
     uiFontScale,
     cursorSpotlight: raw.cursorSpotlight !== false,
+    cursorSpotlightColor: normalizeCursorSpotlightColor(raw.cursorSpotlightColor),
     provider: normalizeModelProviderSettings(raw.provider),
     agents: kunSettingsEnvelope(mergeKunRuntimeSettings(defaultKunRuntimeSettings(), getKunRuntimeSettings(settings))),
     workspaceRoot: typeof raw.workspaceRoot === 'string' ? raw.workspaceRoot : DEFAULT_WORKSPACE_ROOT,
     log: {
       enabled: raw.log?.enabled !== false,
-      retentionDays: typeof raw.log?.retentionDays === 'number' ? raw.log.retentionDays : 2
+      retentionDays: typeof raw.log?.retentionDays === 'number'
+        ? raw.log.retentionDays
+        : DEFAULT_LOG_RETENTION_DAYS
     },
     notifications: {
       turnComplete: raw.notifications?.turnComplete !== false
@@ -106,6 +118,8 @@ export function coerceRendererSettings(settings: AppSettingsV1): AppSettingsV1 {
     write: normalizeWriteSettings(raw.write),
     claw: normalizeClawSettings(raw.claw),
     schedule: normalizeScheduleSettings(raw.schedule),
+    workflow: normalizeWorkflowSettings(raw.workflow),
+    terminal: normalizeTerminalSettings(raw.terminal),
     guiUpdate: {
       channel: normalizeGuiUpdateChannel(raw.guiUpdate?.channel ?? DEFAULT_GUI_UPDATE_CHANNEL)
     },

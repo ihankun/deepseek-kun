@@ -3,6 +3,7 @@ import { getProvider } from '../agent/registry'
 import { rendererRuntimeClient } from '../agent/runtime-client'
 import i18n from '../i18n'
 import { applyTheme, applyUiFontScale } from '../lib/apply-theme'
+import { confirmDialog } from '../lib/confirm-dialog'
 import { formatWorkspacePickerError } from '../lib/format-workspace-picker-error'
 import { formatRuntimeError, getRuntimeErrorCode } from '../lib/format-runtime-error'
 import {
@@ -34,6 +35,7 @@ function releaseThreadWorktreeIfNeeded(threadId: string | null): void {
   if (typeof window.kunGui?.releaseWorktree !== 'function') return
   const record = readThreadWorktreeRegistry().worktrees[threadId]
   if (!record) return
+  if (record.poolIndex === undefined) return
   void window.kunGui
     .releaseWorktree({
       projectPath: record.projectPath,
@@ -180,7 +182,55 @@ function settleInterruptedTurn(set: ChatStoreSet, get: ChatStoreGet): void {
 
 export function createMaintenanceActions(
   { set, get, sseAbortRef }: StoreActionContext
-): Pick<ChatState, 'renameActiveThread' | 'renameThread' | 'archiveThread' | 'compactActiveThread' | 'forkActiveThread' | 'setActiveThreadGoal' | 'setActiveThreadGoalStatus' | 'clearActiveThreadGoal' | 'setActiveThreadTodoStatus' | 'clearActiveThreadTodos' | 'syncPlanTodosFromMarkdown' | 'resumeSessionIntoThread' | 'deleteThread' | 'rewindAndResend' | 'resolveApproval' | 'resolveUserInput' | 'interrupt'> {
+): Pick<ChatState, 'renameActiveThread' | 'renameThread' | 'archiveThread' | 'compactActiveThread' | 'forkActiveThread' | 'forkThreadFromTurn' | 'setActiveThreadGoal' | 'setActiveThreadGoalStatus' | 'clearActiveThreadGoal' | 'setActiveThreadTodoStatus' | 'clearActiveThreadTodos' | 'syncPlanTodosFromMarkdown' | 'resumeSessionIntoThread' | 'deleteThread' | 'rewindAndResend' | 'rollbackWorkspaceToCheckpoint' | 'resolveApproval' | 'resolveUserInput' | 'interrupt'> {
+  const forkActiveThreadWithOptions = async (options: { turnId?: string } = {}): Promise<void> => {
+    const { activeThreadId, busy, blocks } = get()
+    if (!activeThreadId) return
+    if (busy) {
+      set({ error: i18n.t('common:threadActionBusy') })
+      return
+    }
+    if (get().runtimeConnection !== 'ready') {
+      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return
+    }
+    const p = getProvider()
+    if (typeof p.forkThread !== 'function') {
+      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
+      return
+    }
+    const turnId = options.turnId?.trim()
+    try {
+      const parentThread =
+        get().threads.find((thread) => thread.id === activeThreadId) ?? {
+          id: activeThreadId,
+          title: activeThreadId.slice(0, 8)
+        }
+      const forked = await p.forkThread(activeThreadId, turnId ? { turnId } : undefined)
+      saveThreadForkRegistry(
+        markThreadFork(
+          forked.id,
+          parentThread,
+          {
+            createdAt: forked.forkedAt ?? new Date().toISOString(),
+            forkedFromMessageCount: forked.forkedFromMessageCount ?? forkedMessageCount(blocks),
+            forkedFromTurnCount: forked.forkedFromTurnCount ?? forkedTurnCount(blocks)
+          },
+          readThreadForkRegistry()
+        )
+      )
+      await get().refreshThreads()
+      await get().selectThread(forked.id)
+    } catch (e) {
+      set({
+        error: formatRuntimeError(e),
+        ...(shouldOpenSettingsForError(e)
+          ? { route: 'settings' as const, settingsSection: 'agents' as const }
+          : {})
+      })
+    }
+  }
+
   return {
   renameActiveThread: async (title) => {
     const { activeThreadId } = get()
@@ -321,50 +371,13 @@ export function createMaintenanceActions(
   },
 
   forkActiveThread: async () => {
-    const { activeThreadId, busy, blocks } = get()
-    if (!activeThreadId) return
-    if (busy) {
-      set({ error: i18n.t('common:threadActionBusy') })
-      return
-    }
-    if (get().runtimeConnection !== 'ready') {
-      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
-      return
-    }
-    const p = getProvider()
-    if (typeof p.forkThread !== 'function') {
-      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
-      return
-    }
-    try {
-      const parentThread =
-        get().threads.find((thread) => thread.id === activeThreadId) ?? {
-          id: activeThreadId,
-          title: activeThreadId.slice(0, 8)
-        }
-      const forked = await p.forkThread(activeThreadId)
-      saveThreadForkRegistry(
-        markThreadFork(
-          forked.id,
-          parentThread,
-          {
-            createdAt: forked.forkedAt ?? new Date().toISOString(),
-            forkedFromMessageCount: forked.forkedFromMessageCount ?? forkedMessageCount(blocks),
-            forkedFromTurnCount: forked.forkedFromTurnCount ?? forkedTurnCount(blocks)
-          },
-          readThreadForkRegistry()
-        )
-      )
-      await get().refreshThreads()
-      await get().selectThread(forked.id)
-    } catch (e) {
-      set({
-        error: formatRuntimeError(e),
-        ...(shouldOpenSettingsForError(e)
-          ? { route: 'settings' as const, settingsSection: 'agents' as const }
-          : {})
-      })
-    }
+    await forkActiveThreadWithOptions()
+  },
+
+  forkThreadFromTurn: async (turnId) => {
+    const targetTurnId = turnId.trim()
+    if (!targetTurnId) return
+    await forkActiveThreadWithOptions({ turnId: targetTurnId })
   },
 
   setActiveThreadGoal: async (objective) => {
@@ -607,7 +620,7 @@ export function createMaintenanceActions(
     // Release the worktree pool slot if this thread owned one. Best-effort:
     // a failure to release must not block thread deletion.
     const wtRecord = readThreadWorktreeRegistry().worktrees[targetId]
-    if (wtRecord) {
+    if (wtRecord?.poolIndex !== undefined) {
       try {
         await window.kunGui.releaseWorktree({
           projectPath: wtRecord.projectPath,
@@ -662,11 +675,31 @@ export function createMaintenanceActions(
     }
     const idx = state.blocks.findIndex((b) => b.id === userBlockId && b.kind === 'user')
     if (idx < 0) return
+    const targetBlock = state.blocks[idx]
+    if (targetBlock?.kind !== 'user') return
+    const turnId = targetBlock.meta?.turnId
+    if (!state.activeThreadId || !turnId) {
+      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
+      return
+    }
+    const p = getProvider()
+    if (typeof p.rewindThread !== 'function') {
+      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
+      return
+    }
+    const checkpointId = targetBlock.meta?.workspaceCheckpointId
+    if (checkpointId) {
+      const restored = await window.kunGui.restoreGitCheckpoint({ checkpointId }).catch((error) => ({
+        ok: false as const,
+        reason: 'error' as const,
+        message: error instanceof Error ? error.message : String(error)
+      }))
+      if (!restored.ok) {
+        set({ error: restored.message })
+        return
+      }
+    }
 
-    // Drop the target user block and everything after it. The runtime keeps
-    // the old items on disk; this only truncates what the UI shows. A future
-    // reload of this thread will surface the old items again — acceptable
-    // tradeoff while no rewind endpoint is exposed by the runtime.
     const trimmedBlocks = state.blocks.slice(0, idx)
 
     const droppedUserIds = state.blocks
@@ -688,21 +721,75 @@ export function createMaintenanceActions(
     sseAbortRef.current = null
     clearBusyWatchdog()
 
-    set({
-      blocks: trimmedBlocks,
-      liveReasoning: '',
-      liveAssistant: '',
-      currentTurnId: null,
-      currentTurnUserId: null,
-      turnStartedAtByUserId,
-      turnDurationByUserId,
-      turnReasoningFirstAtByUserId,
-      turnReasoningLastAtByUserId,
-      queuedMessages: [],
-      error: null
-    })
+    try {
+      await p.rewindThread(state.activeThreadId, turnId)
+      set({
+        blocks: trimmedBlocks,
+        liveReasoning: '',
+        liveAssistant: '',
+        currentTurnId: null,
+        currentTurnUserId: null,
+        turnStartedAtByUserId,
+        turnDurationByUserId,
+        turnReasoningFirstAtByUserId,
+        turnReasoningLastAtByUserId,
+        queuedMessages: [],
+        error: null
+      })
+      await get().sendMessage(trimmed)
+    } catch (e) {
+      set({ error: formatRuntimeError(e) })
+    }
+  },
 
-    await get().sendMessage(trimmed)
+  rollbackWorkspaceToCheckpoint: async (checkpointId) => {
+    const targetCheckpointId = checkpointId.trim()
+    if (!targetCheckpointId) {
+      set({ error: i18n.t('common:rollbackWorkspaceMissingCheckpoint') })
+      return
+    }
+    if (get().busy) {
+      set({ error: i18n.t('common:rollbackWorkspaceBusyError') })
+      return
+    }
+    const confirmed = await confirmDialog(
+      i18n.t('common:rollbackWorkspaceConfirm'),
+      i18n.t('common:rollbackWorkspaceConfirmDetail')
+    )
+    if (!confirmed) return
+    // Re-check busy: the user may have typed and sent a new turn while the
+    // confirm dialog was open. Running `git reset --hard` mid-turn would
+    // wipe files the running agent is actively editing.
+    if (get().busy) {
+      set({ error: i18n.t('common:rollbackWorkspaceBusyError') })
+      return
+    }
+    const { activeThreadId, workspaceRoot } = get()
+    const restored = await window.kunGui.restoreGitCheckpoint({ checkpointId: targetCheckpointId }).catch((error) => ({
+      ok: false as const,
+      reason: 'error' as const,
+      message: error instanceof Error ? error.message : String(error)
+    }))
+    if (!restored.ok) {
+      set({ error: restored.message })
+      return
+    }
+    // Surface the rescue checkpoint id so the user can `git stash apply` it
+    // (or hand-copy from the data dir) if the rollback turns out to have
+    // been a mistake. The destructive ops above already happened.
+    const rescueId =
+      'rescueCheckpointId' in restored && typeof restored.rescueCheckpointId === 'string'
+        ? restored.rescueCheckpointId
+        : null
+    console.info(
+      '[rollback] rescue checkpoint:',
+      rescueId,
+      'workspace:',
+      workspaceRoot,
+      'thread:',
+      activeThreadId
+    )
+    set({ error: null })
   },
 
   resolveApproval: async (blockId, decision) => {

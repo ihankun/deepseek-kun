@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClawImChannelV1 } from '@shared/app-settings'
+import type { ModelProviderModelGroup } from '@shared/kun-gui-api'
 import { CLAW_MANAGED_INSTRUCTIONS_HEADING } from '@shared/app-settings'
 import {
   MAX_TURN_MODEL_LABELS,
   MAX_THREAD_COMPOSER_SELECTIONS,
   MAX_CODE_WORKSPACE_ROOTS,
+  DEFAULT_COMPOSER_CONTEXT_WINDOW_TOKENS,
   clawThreadIdsFromChannels,
   clawThreadTitleLooksManaged,
   compactCodeWorkspaceRoots,
@@ -17,8 +19,12 @@ import {
   normalizeTurnModelMap,
   readThreadComposerSelection,
   reconcileCodeWorkspaceRoots,
+  composerModeForThread,
+  rememberThreadComposerMode,
+  readThreadComposerMode,
   rememberThreadComposerSelection,
-  rememberTurnModel
+  rememberTurnModel,
+  resolveComposerContextWindowTokens
 } from './chat-store-helpers'
 
 const TURN_MODEL_STORAGE_KEY = 'kun.turnModelLabel'
@@ -209,6 +215,67 @@ describe('chat-store Claw helpers', () => {
     expect(fallbackComposerModel([], '')).toBe('')
   })
 
+  it('resolves context windows from the selected provider model profile', () => {
+    const modelGroups: ModelProviderModelGroup[] = [
+      {
+        providerId: 'other',
+        label: 'Other',
+        modelIds: ['glm-4.5'],
+        modelProfiles: {
+          'glm-4.5': {
+            contextWindowTokens: 256_000,
+            inputModalities: ['text'],
+            outputModalities: ['text'],
+            supportsToolCalling: true,
+            messageParts: ['text']
+          }
+        }
+      },
+      {
+        providerId: 'zhipu',
+        label: 'Zhipu',
+        modelIds: ['glm-4.5'],
+        modelProfiles: {
+          'glm-4.5': {
+            contextWindowTokens: 200_000,
+            inputModalities: ['text'],
+            outputModalities: ['text'],
+            supportsToolCalling: true,
+            messageParts: ['text']
+          }
+        }
+      }
+    ]
+
+    expect(resolveComposerContextWindowTokens(modelGroups, 'glm-4.5', 'zhipu')).toBe(200_000)
+  })
+
+  it('falls back to 128k when the selected model lacks a configured window', () => {
+    const modelGroups: ModelProviderModelGroup[] = [
+      {
+        providerId: 'custom',
+        label: 'Custom',
+        modelIds: ['custom-model'],
+        modelProfiles: {
+          'custom-model': {
+            inputModalities: ['text'],
+            outputModalities: ['text'],
+            supportsToolCalling: true,
+            messageParts: ['text']
+          }
+        }
+      }
+    ]
+
+    expect(resolveComposerContextWindowTokens(modelGroups, 'custom-model', 'custom')).toBe(
+      DEFAULT_COMPOSER_CONTEXT_WINDOW_TOKENS
+    )
+    expect(resolveComposerContextWindowTokens(modelGroups, 'missing-model', 'custom')).toBe(
+      DEFAULT_COMPOSER_CONTEXT_WINDOW_TOKENS
+    )
+    expect(resolveComposerContextWindowTokens(modelGroups, '', 'custom')).toBeUndefined()
+  })
+
   it('normalizes and caps persisted turn model labels', () => {
     const raw: Record<string, unknown> = {
       'bad-key': 'bad-model',
@@ -272,6 +339,24 @@ describe('chat-store Claw helpers', () => {
     expect(normalized['thread-5']).toEqual({ model: 'model-5', providerId: 'provider-5' })
     expect(normalized['bad-empty-model']).toBeUndefined()
     expect(normalized['bad-number']).toBeUndefined()
+  })
+
+  it('persists composer plan mode independently per thread', () => {
+    rememberThreadComposerMode('thread-a', 'plan')
+    rememberThreadComposerMode('thread-b', 'agent')
+
+    expect(readThreadComposerMode('thread-a')).toBe('plan')
+    expect(readThreadComposerMode('thread-b')).toBe('agent')
+  })
+
+  it('resolves composer mode from stored selection before thread metadata', () => {
+    rememberThreadComposerMode('thread-a', 'agent')
+
+    expect(
+      composerModeForThread({ id: 'thread-a', mode: 'plan' }, readThreadComposerMode('thread-a'))
+    ).toBe('agent')
+    expect(composerModeForThread({ id: 'thread-b', mode: 'plan' }, null)).toBe('plan')
+    expect(composerModeForThread({ id: 'thread-c', mode: 'agent' }, null)).toBe('agent')
   })
 
   it('persists composer model selections independently per thread', () => {

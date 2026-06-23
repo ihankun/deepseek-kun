@@ -70,6 +70,7 @@ export function threadFromCore(thread: CoreThreadSummaryJson): NormalizedThread 
 
 function normalizeApprovalPolicy(value: string | undefined): NormalizedThread['approvalPolicy'] {
   switch (value) {
+    case 'always':
     case 'auto':
     case 'on-request':
     case 'untrusted':
@@ -273,6 +274,10 @@ function applyRuntimeDisclosureMeta(
   item: CoreTurnItemJson,
   child?: CoreChildRuntimeMetadataJson
 ): void {
+  if (item.turnId) meta.turnId = item.turnId
+  if (typeof item.workspaceCheckpointId === 'string' && item.workspaceCheckpointId.trim()) {
+    meta.workspaceCheckpointId = item.workspaceCheckpointId.trim()
+  }
   const attachmentIds = stringArray(item.attachmentIds)
   const activeSkillIds = stringArray(item.activeSkillIds)
   const injectedMemoryIds = stringArray(item.injectedMemoryIds)
@@ -645,6 +650,7 @@ function userMessageBlockFromItem(item: CoreTurnItemJson): ChatBlock | null {
   return {
     kind: 'user',
     id: item.id,
+    turnId: item.turnId,
     createdAt: itemCreatedAt(item),
     text: item.text ?? '',
     ...(Object.keys(meta).length > 0 ? { meta } : {})
@@ -665,7 +671,7 @@ function userMessageEventFromItem(item: CoreTurnItemJson): UserMessageEventPaylo
 
 function assistantTextBlockFromItem(item: CoreTurnItemJson): ChatBlock | null {
   if (!item.text?.trim()) return null
-  return { kind: 'assistant', id: item.id, createdAt: itemCreatedAt(item), text: item.text }
+  return { kind: 'assistant', id: item.id, turnId: item.turnId, createdAt: itemCreatedAt(item), text: item.text }
 }
 
 function reasoningBlockFromItem(item: CoreTurnItemJson): ChatBlock | null {

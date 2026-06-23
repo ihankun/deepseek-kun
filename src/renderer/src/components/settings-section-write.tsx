@@ -67,6 +67,8 @@ export function WriteSettingsSection({ ctx }: { ctx: Record<string, any> }): Rea
     kun,
     update,
     selectControlClass,
+    compactHomePath,
+    expandHomePath,
     pickWriteWorkspace,
     resetWriteWorkspaceToDefault,
     writeWorkspacePickerError,
@@ -112,16 +114,17 @@ export function WriteSettingsSection({ ctx }: { ctx: Record<string, any> }): Rea
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                         <input
                           className="w-full rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[14px] text-ds-ink shadow-sm focus:border-accent/40 focus:outline-none focus:ring-1 focus:ring-accent/30"
-                          value={form.write.defaultWorkspaceRoot}
-                          onChange={(e) =>
+                          value={compactHomePath(form.write.defaultWorkspaceRoot)}
+                          onChange={(e) => {
+                            const workspaceRoot = expandHomePath(e.target.value)
                             update({
                               write: {
-                                defaultWorkspaceRoot: e.target.value,
-                                activeWorkspaceRoot: e.target.value,
-                                workspaces: [e.target.value, ...form.write.workspaces]
+                                defaultWorkspaceRoot: workspaceRoot,
+                                activeWorkspaceRoot: workspaceRoot,
+                                workspaces: [workspaceRoot, ...form.write.workspaces]
                               }
                             })
-                          }
+                          }}
                           placeholder={t('writeWorkspaceRootPlaceholder')}
                         />
                         <button
@@ -593,83 +596,87 @@ export function WriteSettingsSection({ ctx }: { ctx: Record<string, any> }): Rea
               </SettingsCard>
 
               <SettingsCard title={t('writeAgentPresets')} className="mt-5">
-                <p className="text-[12.5px] leading-5 text-ds-faint">
-                  {t('writeAgentPresetsDesc')}
-                </p>
-                <div className="mt-3 flex flex-col gap-3">
-                  {agentPresets.map((preset: WriteAgentPresetV1, index: number) => {
-                    return (
-                      <div
-                        key={preset.id}
-                        className="rounded-xl border border-ds-border-muted bg-ds-card/70 p-3"
-                      >
-                        <div className="flex items-center gap-2">
-                          <input
-                            className={`${textInputClass} max-w-[56px] text-center`}
-                            value={preset.emoji}
-                            placeholder="🤖"
-                            spellCheck={false}
-                            onChange={(e) => {
-                              const next = [...agentPresets]
-                              next[index] = { ...preset, emoji: e.target.value }
-                              updateAgentPresets(next)
-                            }}
-                          />
-                          <input
-                            className={`${textInputClass} max-w-[220px]`}
-                            value={preset.name}
-                            placeholder={t('writeAgentPresetNamePlaceholder')}
-                            spellCheck={false}
-                            onChange={(e) => {
-                              const next = [...agentPresets]
-                              next[index] = { ...preset, name: e.target.value }
-                              updateAgentPresets(next)
-                            }}
-                          />
-                          <button
-                            type="button"
-                            className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-ds-faint transition hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-300"
-                            title={t('writeAgentPresetRemove')}
-                            aria-label={t('writeAgentPresetRemove')}
-                            onClick={() =>
-                              updateAgentPresets(
-                                agentPresets.filter((item: WriteAgentPresetV1) => item.id !== preset.id)
-                              )
-                            }
+                <div className="px-3 py-4">
+                  <p className="text-[12.5px] leading-5 text-ds-faint">
+                    {t('writeAgentPresetsDesc')}
+                  </p>
+                  {agentPresets.length > 0 ? (
+                    <div className="mt-3 flex flex-col gap-3">
+                      {agentPresets.map((preset: WriteAgentPresetV1, index: number) => {
+                        return (
+                          <div
+                            key={preset.id}
+                            className="rounded-xl border border-ds-border-muted bg-ds-card/70 p-3"
                           >
-                            <Trash2 className="h-4 w-4" strokeWidth={1.8} />
-                          </button>
-                        </div>
-                        <textarea
-                          className={`${textInputClass} mt-2 min-h-[84px] resize-y leading-5`}
-                          value={preset.persona}
-                          placeholder={t('writeAgentPersonaPlaceholder')}
-                          spellCheck={false}
-                          onChange={(e) => {
-                            const next = [...agentPresets]
-                            next[index] = { ...preset, persona: e.target.value }
-                            updateAgentPresets(next)
-                          }}
-                        />
-                      </div>
-                    )
-                  })}
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className={ghostButtonClass}
-                    disabled={agentPresets.length >= WRITE_AGENT_PRESET_MAX_COUNT}
-                    onClick={() =>
-                      updateAgentPresets([
-                        ...agentPresets,
-                        { id: `custom-${Date.now().toString(36)}`, name: '', emoji: '🤖', persona: '' }
-                      ])
-                    }
-                  >
-                    <Plus className="h-4 w-4" strokeWidth={2} />
-                    {t('writeAgentPresetAdd')}
-                  </button>
+                            <div className="flex items-center gap-2">
+                              <input
+                                className={`${textInputClass} max-w-[56px] text-center`}
+                                value={preset.emoji}
+                                placeholder="🤖"
+                                spellCheck={false}
+                                onChange={(e) => {
+                                  const next = [...agentPresets]
+                                  next[index] = { ...preset, emoji: e.target.value }
+                                  updateAgentPresets(next)
+                                }}
+                              />
+                              <input
+                                className={`${textInputClass} max-w-[220px]`}
+                                value={preset.name}
+                                placeholder={t('writeAgentPresetNamePlaceholder')}
+                                spellCheck={false}
+                                onChange={(e) => {
+                                  const next = [...agentPresets]
+                                  next[index] = { ...preset, name: e.target.value }
+                                  updateAgentPresets(next)
+                                }}
+                              />
+                              <button
+                                type="button"
+                                className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-ds-faint transition hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-300"
+                                title={t('writeAgentPresetRemove')}
+                                aria-label={t('writeAgentPresetRemove')}
+                                onClick={() =>
+                                  updateAgentPresets(
+                                    agentPresets.filter((item: WriteAgentPresetV1) => item.id !== preset.id)
+                                  )
+                                }
+                              >
+                                <Trash2 className="h-4 w-4" strokeWidth={1.8} />
+                              </button>
+                            </div>
+                            <textarea
+                              className={`${textInputClass} mt-2 min-h-[84px] resize-y leading-5`}
+                              value={preset.persona}
+                              placeholder={t('writeAgentPersonaPlaceholder')}
+                              spellCheck={false}
+                              onChange={(e) => {
+                                const next = [...agentPresets]
+                                next[index] = { ...preset, persona: e.target.value }
+                                updateAgentPresets(next)
+                              }}
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      className={ghostButtonClass}
+                      disabled={agentPresets.length >= WRITE_AGENT_PRESET_MAX_COUNT}
+                      onClick={() =>
+                        updateAgentPresets([
+                          ...agentPresets,
+                          { id: `custom-${Date.now().toString(36)}`, name: '', emoji: '🤖', persona: '' }
+                        ])
+                      }
+                    >
+                      <Plus className="h-4 w-4" strokeWidth={2} />
+                      {t('writeAgentPresetAdd')}
+                    </button>
+                  </div>
                 </div>
               </SettingsCard>
 

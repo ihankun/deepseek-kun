@@ -9,7 +9,9 @@ import {
   defaultKunRuntimeSettings,
   defaultModelProviderSettings,
   defaultScheduleSettings,
+  defaultWorkflowSettings,
   defaultWriteSettings,
+  defaultTerminalSettings,
   type AppSettingsPatch,
   type AppSettingsV1
 } from '../../shared/app-settings'
@@ -47,6 +49,8 @@ function settings(): AppSettingsV1 {
     write: defaultWriteSettings(),
     claw: defaultClawSettings(),
     schedule: defaultScheduleSettings(),
+    workflow: defaultWorkflowSettings(),
+    terminal: defaultTerminalSettings(),
     guiUpdate: { channel: 'stable' },
     codePromptPrefix: '',
     disabledSkillIds: []
@@ -66,6 +70,7 @@ function registerOptions(overrides: Partial<Parameters<typeof import('./register
     fetchUpstreamModels: vi.fn() as never,
     getClawRuntime: () => null,
     getScheduleRuntime: () => null,
+    getWorkflowRuntime: () => null,
     startFeishuInstallQrcode: vi.fn() as never,
     pollFeishuInstall: vi.fn() as never,
     startWeixinInstallQrcode: vi.fn() as never,
@@ -110,10 +115,55 @@ describe('registerAppIpcHandlers', () => {
       theme: 'dark' as const,
       agents: {
         kun: {
-          port: 9000
+          port: 19000
         }
       }
     }
+    const handler = handlers.get('settings:set')
+    await expect(handler?.({}, payload)).resolves.toEqual(settings())
+    expect(applySettingsPatch).toHaveBeenCalledWith(payload)
+  })
+
+  it('accepts telegram phone connection settings patches', async () => {
+    const { registerAppIpcHandlers } = await import('./register-app-ipc-handlers')
+    const applySettingsPatch = vi.fn(async () => settings())
+
+    registerAppIpcHandlers(registerOptions({ applySettingsPatch }))
+
+    const payload = {
+      claw: {
+        enabled: true,
+        im: { enabled: true, workspaceRoot: '' },
+        channels: [{
+          id: 'telegram_1',
+          provider: 'telegram' as const,
+          label: 'telegram agent',
+          enabled: true,
+          model: 'auto',
+          threadId: '',
+          workspaceRoot: '',
+          agentProfile: {
+            name: 'telegram agent',
+            description: '',
+            identity: '',
+            personality: '',
+            userContext: '',
+            replyRules: ''
+          },
+          platformCredential: {
+            kind: 'telegram' as const,
+            botToken: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi',
+            allowedChatIds: '123456789',
+            botUsername: 'kun_test_bot',
+            createdAt: '2026-06-19T00:00:00.000Z'
+          },
+          conversations: [],
+          createdAt: '2026-06-19T00:00:00.000Z',
+          updatedAt: '2026-06-19T00:00:00.000Z'
+        }]
+      }
+    }
+
     const handler = handlers.get('settings:set')
     await expect(handler?.({}, payload)).resolves.toEqual(settings())
     expect(applySettingsPatch).toHaveBeenCalledWith(payload)
@@ -260,7 +310,7 @@ describe('registerAppIpcHandlers', () => {
   it('uses the GUI-managed WeChat bridge for WeChat install handlers', async () => {
     const { registerAppIpcHandlers } = await import('./register-app-ipc-handlers')
     const configuredSettings = settings()
-    configuredSettings.claw.im.weixinBridgeUrl = 'http://127.0.0.1:8787/rpc'
+    configuredSettings.claw.im.weixinBridgeUrl = 'http://127.0.0.1:18787/rpc'
     const store = { load: vi.fn(async () => configuredSettings) }
     const startWeixinInstallQrcode = vi.fn(async () => ({
       ok: false as const,
@@ -290,7 +340,7 @@ describe('registerAppIpcHandlers', () => {
     const scheduleRuntime = {
       status: vi.fn(async () => ({
         internalServerRunning: true,
-        internalUrl: 'http://127.0.0.1:8788',
+        internalUrl: 'http://127.0.0.1:18788',
         runningTaskIds: ['task-1'],
         powerSaveBlockerActive: true
       })),

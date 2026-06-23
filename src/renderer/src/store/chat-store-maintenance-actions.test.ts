@@ -27,9 +27,12 @@ type Harness = {
     setThreadGoal: ReturnType<typeof vi.fn>
     clearThreadGoal: ReturnType<typeof vi.fn>
     interruptTurn: ReturnType<typeof vi.fn>
+    forkThread: ReturnType<typeof vi.fn>
+    rewindThread: ReturnType<typeof vi.fn>
   }
   recoverActiveTurn: ReturnType<typeof vi.fn>
   refreshThreads: ReturnType<typeof vi.fn>
+  selectThread: ReturnType<typeof vi.fn>
   sendMessage: ReturnType<typeof vi.fn>
   state: ChatState
 }
@@ -83,7 +86,19 @@ function buildHarness(options: {
       )
     ),
     clearThreadGoal: vi.fn(async () => true),
-    interruptTurn: vi.fn(async () => undefined)
+    interruptTurn: vi.fn(async () => undefined),
+    rewindThread: vi.fn(async () => undefined),
+    forkThread: vi.fn(async (
+      threadId: string,
+      options?: { turnId?: string }
+    ) => ({
+      ...thread('thr_forked'),
+      title: 'Forked',
+      forkedFromThreadId: threadId,
+      forkedFromTitle: 'Parent',
+      forkedAt: '2026-06-04T00:02:00.000Z',
+      forkedFromTurnCount: options?.turnId ? 1 : 2
+    }))
   }
   registryMock.getProvider.mockReturnValue(provider)
 
@@ -94,6 +109,9 @@ function buildHarness(options: {
     state.threads = [created, ...state.threads]
   })
   const refreshThreads = vi.fn(async () => undefined)
+  const selectThread = vi.fn(async (id: string) => {
+    state.activeThreadId = id
+  })
   const drainQueuedMessages = vi.fn(async () => undefined)
   const recoverActiveTurn = vi.fn(async () => false)
   const sendMessage = vi.fn(async (
@@ -110,6 +128,7 @@ function buildHarness(options: {
     drainQueuedMessages,
     recoverActiveTurn,
     refreshThreads,
+    selectThread,
     runtimeConnection: 'ready',
     sendMessage,
     settingsSection: 'general',
@@ -127,8 +146,184 @@ function buildHarness(options: {
     sseAbortRef: { current: null }
   })
 
-  return { actions, createThread, drainQueuedMessages, get, provider, recoverActiveTurn, refreshThreads, sendMessage, state }
+  return { actions, createThread, drainQueuedMessages, get, provider, recoverActiveTurn, refreshThreads, selectThread, sendMessage, state }
 }
+
+describe('chat-store-maintenance-actions fork actions', () => {
+  beforeEach(() => {
+    registryMock.getProvider.mockReset()
+  })
+
+  it('forks the active thread from a specific turn and selects the new thread', async () => {
+    const { actions, provider, refreshThreads, selectThread, state } = buildHarness()
+    state.blocks = [
+      { kind: 'user', id: 'user_1', turnId: 'turn_1', text: 'question' },
+      { kind: 'assistant', id: 'assistant_1', turnId: 'turn_1', text: 'answer' },
+      { kind: 'user', id: 'user_2', turnId: 'turn_2', text: 'later question' }
+    ]
+
+    await actions.forkThreadFromTurn(' turn_1 ')
+
+    expect(provider.forkThread).toHaveBeenCalledWith('thr_existing', { turnId: 'turn_1' })
+    expect(refreshThreads).toHaveBeenCalledTimes(1)
+    expect(selectThread).toHaveBeenCalledWith('thr_forked')
+    expect(state.activeThreadId).toBe('thr_forked')
+  })
+})
+
+describe('chat-store-maintenance-actions workspace rollback', () => {
+  beforeEach(() => {
+    registryMock.getProvider.mockReset()
+  })
+
+  it('restores the workspace checkpoint without rewinding or resending the conversation', async () => {
+    const previousWindow = globalThis.window
+    const restoreGitCheckpoint = vi.fn(async () => ({
+      ok: true,
+      checkpointId: 'gcp_1',
+      repositoryRoot: '/workspace/deepseek-gui',
+      head: 'abc123',
+      currentBranch: 'develop',
+      rescueCheckpointId: 'gcp_rescue'
+    }))
+    ;(globalThis as { window?: unknown }).window = {
+      confirm: vi.fn(() => true),
+      kunGui: {
+        restoreGitCheckpoint
+      }
+    }
+    try {
+      const { actions, provider, sendMessage, state } = buildHarness()
+      state.blocks = [
+        { kind: 'user', id: 'user_1', turnId: 'turn_1', text: 'question', meta: { workspaceCheckpointId: 'gcp_1' } },
+        { kind: 'assistant', id: 'assistant_1', turnId: 'turn_1', text: 'answer' }
+      ]
+
+      await actions.rollbackWorkspaceToCheckpoint(' gcp_1 ')
+
+      expect(restoreGitCheckpoint).toHaveBeenCalledWith({ checkpointId: 'gcp_1' })
+      expect(provider.rewindThread).not.toHaveBeenCalled()
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(state.blocks).toHaveLength(2)
+      expect(state.error).toBeNull()
+    } finally {
+      ;(globalThis as { window?: unknown }).window = previousWindow
+    }
+  })
+
+  it('uses a checkpoint-specific error when rollback has no checkpoint id', async () => {
+    const previousWindow = globalThis.window
+    const restoreGitCheckpoint = vi.fn(async () => ({
+      ok: true,
+      checkpointId: 'gcp_1',
+      repositoryRoot: '/workspace/deepseek-gui',
+      head: 'abc123',
+      currentBranch: 'develop',
+      rescueCheckpointId: null
+    }))
+    ;(globalThis as { window?: unknown }).window = {
+      confirm: vi.fn(() => true),
+      kunGui: {
+        restoreGitCheckpoint
+      }
+    }
+    try {
+      const { actions, state } = buildHarness()
+
+      await actions.rollbackWorkspaceToCheckpoint('   ')
+
+      expect(restoreGitCheckpoint).not.toHaveBeenCalled()
+      expect(state.error).toBe('This turn has no file-change checkpoint to roll back.')
+    } finally {
+      ;(globalThis as { window?: unknown }).window = previousWindow
+    }
+  })
+
+  it('short-circuits without restoring when busy flips after the confirm dialog resolves', async () => {
+    const previousWindow = globalThis.window
+    const restoreGitCheckpoint = vi.fn(async () => ({
+      ok: true,
+      checkpointId: 'gcp_1',
+      repositoryRoot: '/workspace/deepseek-gui',
+      head: 'abc123',
+      currentBranch: 'develop',
+      rescueCheckpointId: 'gcp_rescue'
+    }))
+    const { actions, state } = buildHarness()
+    let confirmCalls = 0
+    ;(globalThis as { window?: unknown }).window = {
+      confirm: vi.fn(() => {
+        confirmCalls += 1
+        // Simulate the user typing+sending a new turn while the confirm
+        // dialog is still open: by the time confirm() resolves, the store
+        // is busy again. The action must NOT proceed to git reset --hard.
+        state.busy = true
+        return true
+      }),
+      kunGui: {
+        restoreGitCheckpoint
+      }
+    }
+    try {
+      state.blocks = [
+        { kind: 'user', id: 'user_1', turnId: 'turn_1', text: 'question', meta: { workspaceCheckpointId: 'gcp_1' } },
+        { kind: 'assistant', id: 'assistant_1', turnId: 'turn_1', text: 'answer' }
+      ]
+      state.busy = false
+
+      await actions.rollbackWorkspaceToCheckpoint('gcp_1')
+
+      expect(confirmCalls).toBe(1)
+      expect(restoreGitCheckpoint).not.toHaveBeenCalled()
+      expect(state.error).toBe('Cannot roll back the workspace while the agent is running.')
+    } finally {
+      ;(globalThis as { window?: unknown }).window = previousWindow
+    }
+  })
+
+  it('surfaces the rescue checkpoint id after a successful restore', async () => {
+    const previousWindow = globalThis.window
+    const previousConsoleInfo = console.info
+    const restoreGitCheckpoint = vi.fn(async () => ({
+      ok: true,
+      checkpointId: 'gcp_1',
+      repositoryRoot: '/workspace/deepseek-gui',
+      head: 'abc123',
+      currentBranch: 'develop',
+      rescueCheckpointId: 'gcp_rescue_xyz'
+    }))
+    ;(globalThis as { window?: unknown }).window = {
+      confirm: vi.fn(() => true),
+      kunGui: {
+        restoreGitCheckpoint
+      }
+    }
+    const consoleInfo = vi.fn()
+    console.info = consoleInfo
+    try {
+      const { actions, state } = buildHarness()
+      state.blocks = [
+        { kind: 'user', id: 'user_1', turnId: 'turn_1', text: 'question', meta: { workspaceCheckpointId: 'gcp_1' } },
+        { kind: 'assistant', id: 'assistant_1', turnId: 'turn_1', text: 'answer' }
+      ]
+
+      await actions.rollbackWorkspaceToCheckpoint('gcp_1')
+
+      expect(restoreGitCheckpoint).toHaveBeenCalledWith({ checkpointId: 'gcp_1' })
+      expect(consoleInfo).toHaveBeenCalledTimes(1)
+      const logArgs = consoleInfo.mock.calls[0]
+      expect(logArgs[0]).toBe('[rollback] rescue checkpoint:')
+      expect(logArgs[1]).toBe('gcp_rescue_xyz')
+      expect(logArgs[2]).toBe('workspace:')
+      expect(logArgs[4]).toBe('thread:')
+      expect(logArgs[5]).toBe('thr_existing')
+      expect(state.error).toBeNull()
+    } finally {
+      console.info = previousConsoleInfo
+      ;(globalThis as { window?: unknown }).window = previousWindow
+    }
+  })
+})
 
 describe('chat-store-maintenance-actions goal actions', () => {
   beforeEach(() => {

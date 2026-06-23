@@ -20,7 +20,9 @@ import {
   defaultKunRuntimeSettings,
   defaultModelProviderSettings,
   defaultScheduleSettings,
+  defaultWorkflowSettings,
   defaultWriteSettings,
+  defaultTerminalSettings,
   type AppSettingsV1
 } from '../shared/app-settings'
 
@@ -54,6 +56,8 @@ function createSettings(patch: Partial<AppSettingsV1['schedule']['internal']> = 
         ...patch
       }
     },
+    workflow: defaultWorkflowSettings(),
+    terminal: defaultTerminalSettings(),
     guiUpdate: {
       channel: 'stable'
     },
@@ -65,7 +69,7 @@ function createSettings(patch: Partial<AppSettingsV1['schedule']['internal']> = 
       im: {
         ...claw.im,
         enabled: true,
-        port: 8787,
+        port: 18787,
         secret: ''
       }
     }
@@ -86,7 +90,7 @@ describe('claw schedule MCP config', () => {
   })
 
   it('writes the gui_schedule server to the Kun MCP JSON config shape', () => {
-    const settings = createSettings({ port: 9787, secret: 'top-secret' })
+    const settings = createSettings({ port: 19787, secret: 'top-secret' })
     const synced = buildSyncedClawScheduleMcpJson(
       {
         timeouts: { connect_timeout: 1 },
@@ -113,9 +117,11 @@ describe('claw schedule MCP config', () => {
           resolveClawScheduleMcpNodeEntryPath(launch),
           '--gui-schedule-mcp-server',
           '--base-url',
-          'http://127.0.0.1:9787',
+          'http://127.0.0.1:19787',
           '--secret',
-          'top-secret'
+          'top-secret',
+          '--workflow-base-url',
+          'http://127.0.0.1:18799'
         ],
         env: {
           ELECTRON_RUN_AS_NODE: '1'
@@ -232,7 +238,9 @@ describe('claw schedule MCP config', () => {
             resolveClawScheduleMcpNodeEntryPath(launch),
             '--gui-schedule-mcp-server',
             '--base-url',
-            'http://127.0.0.1:8788'
+            'http://127.0.0.1:18788',
+            '--workflow-base-url',
+            'http://127.0.0.1:18799'
           ],
           env: {
             ELECTRON_RUN_AS_NODE: '1'
@@ -269,7 +277,7 @@ describe('claw schedule MCP config', () => {
 
   it('requests a runtime restart when the MCP launch arguments change', () => {
     expect(clawScheduleMcpSettingsChanged(createSettings(), createSettings())).toBe(false)
-    expect(clawScheduleMcpSettingsChanged(createSettings(), createSettings({ port: 9876 }))).toBe(true)
+    expect(clawScheduleMcpSettingsChanged(createSettings(), createSettings({ port: 19876 }))).toBe(true)
     expect(clawScheduleMcpSettingsChanged(createSettings(), createSettings({ secret: 'abc' }))).toBe(true)
   })
 })

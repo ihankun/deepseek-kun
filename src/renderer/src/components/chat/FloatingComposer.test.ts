@@ -23,11 +23,17 @@ import {
   composerModelMenuItemSelected,
   composerMenuSupportsModel,
   composerReasoningEffortRequestValue,
+  canSwitchComposerModelFromCurrent,
   filterComposerModelIds,
   normalizeComposerReasoningEffort
 } from './FloatingComposerModelPicker'
+import {
+  FloatingComposerExecutionPicker,
+  calculateExecutionMenuPlacement
+} from './FloatingComposerExecutionPicker'
 import { getGoalPanelDraftObjective } from './floating-composer-commands'
 import { useChatStore } from '../../store/chat-store'
+import i18n from '../../i18n'
 import {
   buildComposerFileContextPrompt,
   filterWorkspaceFileMentionSuggestions,
@@ -305,6 +311,20 @@ describe('FloatingComposer model controls', () => {
     expect(placement.top).toBe(633)
   })
 
+  it('keeps execution menus anchored when the app UI is zoomed', () => {
+    const placement = calculateExecutionMenuPlacement({
+      anchorRect: { top: 624, left: 240, bottom: 648, width: 96 },
+      menuWidth: 184,
+      menuHeight: 190,
+      viewportHeight: 720,
+      viewportWidth: 800,
+      coordinateScale: 0.8
+    })
+
+    expect(placement.left).toBe(268)
+    expect(placement.top).toBe(582)
+  })
+
   it('places the model submenu beside the active provider row', () => {
     const placement = calculateFloatingSubmenuPlacement({
       anchorRect: { top: 650, right: 700, bottom: 686, left: 492 },
@@ -445,6 +465,25 @@ describe('FloatingComposer model controls', () => {
     expect(filterComposerModelIds(modelIds, '')).toEqual(modelIds)
     expect(filterComposerModelIds(modelIds, 'max')).toEqual(['MiniMax-M2'])
     expect(filterComposerModelIds(modelIds, '128K')).toEqual(['moonshot-v1-128k'])
+  })
+
+  it('prevents switching from a vision model to a text-only model', () => {
+    const visionProfile: Parameters<typeof canSwitchComposerModelFromCurrent>[0] = {
+      inputModalities: ['text', 'image'],
+      outputModalities: ['text'],
+      supportsToolCalling: true,
+      messageParts: ['text', 'image_url']
+    }
+    const textProfile: Parameters<typeof canSwitchComposerModelFromCurrent>[1] = {
+      inputModalities: ['text'],
+      outputModalities: ['text'],
+      supportsToolCalling: true,
+      messageParts: ['text']
+    }
+
+    expect(canSwitchComposerModelFromCurrent(visionProfile, textProfile)).toBe(false)
+    expect(canSwitchComposerModelFromCurrent(visionProfile, visionProfile)).toBe(true)
+    expect(canSwitchComposerModelFromCurrent(textProfile, visionProfile)).toBe(true)
   })
 
   it('keeps the reasoning strength visible in the model control', () => {
@@ -646,6 +685,92 @@ describe('FloatingComposer image transfer helpers', () => {
 })
 
 describe('FloatingComposer capability controls', () => {
+  it('renders localized execution values in Chinese without visible category prefixes', async () => {
+    const previousLanguage = i18n.language
+    await i18n.changeLanguage('zh')
+
+    try {
+      const html = renderToStaticMarkup(
+        createElement(FloatingComposerExecutionPicker, {
+          value: {
+            approvalPolicy: 'auto',
+            sandboxMode: 'danger-full-access'
+          },
+          onChange: () => undefined
+        })
+      )
+
+      expect(html).toContain('完全访问')
+      expect(html).not.toContain('>审批<')
+      expect(html).not.toContain('>权限<')
+      expect(html).toContain('aria-label="工具权限"')
+      expect(html).toContain('lucide-lock-keyhole-open')
+      expect(html).not.toContain('Full access')
+      expect(html).not.toContain('Auto')
+      expect(html).not.toContain('Bypass')
+    } finally {
+      await i18n.changeLanguage(previousLanguage)
+    }
+  })
+
+  it('renders the workspace-write permission mode in the execution picker', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposerExecutionPicker, {
+        value: {
+          approvalPolicy: 'on-request',
+          sandboxMode: 'workspace-write'
+        },
+        onChange: () => undefined
+      })
+    )
+
+    expect(html).toContain('Workspace write')
+    expect(html).toContain('Can modify the workspace')
+    expect(html).toContain('aria-label="Tool permission"')
+    expect(html).toContain('lucide-folder-pen')
+  })
+
+  it('renders the sensitive-ask permission mode in the execution picker', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposerExecutionPicker, {
+        value: {
+          approvalPolicy: 'untrusted',
+          sandboxMode: 'danger-full-access'
+        },
+        onChange: () => undefined
+      })
+    )
+
+    expect(html).toContain('Sensitive ask')
+    expect(html).toContain('Ordinary reads can run automatically')
+    expect(html).toContain('aria-label="Tool permission"')
+    expect(html).toContain('lucide-shield-question')
+  })
+
+  it('renders the always-ask permission label in Chinese as 永远询问', async () => {
+    const previousLanguage = i18n.language
+    await i18n.changeLanguage('zh')
+
+    try {
+      const html = renderToStaticMarkup(
+        createElement(FloatingComposerExecutionPicker, {
+          value: {
+            approvalPolicy: 'always',
+            sandboxMode: 'danger-full-access'
+          },
+          onChange: () => undefined
+        })
+      )
+
+      expect(html).toContain('永远询问')
+      expect(html).toContain('每次工具调用都要你确认')
+      expect(html).toContain('lucide-hand')
+      expect(html).not.toContain('永远咨询')
+    } finally {
+      await i18n.changeLanguage(previousLanguage)
+    }
+  })
+
   it('enables goal setup before a thread exists when a workspace is available', () => {
     useChatStore.setState({
       activeThreadId: null,
@@ -1132,7 +1257,7 @@ describe('FloatingComposer capability controls', () => {
     expect(html).not.toContain('aria-label="Send" disabled=""')
   })
 
-  it('hides execution access controls in the composer footer', () => {
+  it('shows execution access controls beside the composer menu', () => {
     useChatStore.setState({
       activeThreadId: 'thr_1',
       activeThreadGoal: null,
@@ -1166,8 +1291,12 @@ describe('FloatingComposer capability controls', () => {
       })
     )
 
-    expect(html).not.toContain('Full access')
-    expect(html).not.toContain('aria-label="Execution"')
+    expect(html).toContain('Tool permission')
+    expect(html).toContain('Full access')
+    expect(html).not.toContain('Bypass')
+    expect(html).not.toContain('>Approval<')
+    expect(html).not.toContain('>Access<')
+    expect(html).toContain('aria-label="Tool permission"')
   })
 
   it('renders a changed-file review card above the input', () => {

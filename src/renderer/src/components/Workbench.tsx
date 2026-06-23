@@ -26,8 +26,13 @@ import type { AttachmentReference, ChatBlock, NormalizedThread, UserFileReferenc
 import type { CoreRuntimeInfoJson, CoreRuntimeSkillJson } from '../agent/kun-contract'
 import { getProvider } from '../agent/registry'
 import { rendererRuntimeClient } from '../agent/runtime-client'
+import { applyTheme } from '../lib/apply-theme'
 import { useChatStore } from '../store/chat-store'
-import { isClawThread, providerIdForComposerModel } from '../store/chat-store-helpers'
+import {
+  isClawThread,
+  providerIdForComposerModel,
+  resolveComposerContextWindowTokens
+} from '../store/chat-store-helpers'
 import { threadHasPendingRuntimeWork } from '../store/chat-store-runtime-helpers'
 import {
   extractLatestTurnAutoOpenDevPreviewUrls,
@@ -104,6 +109,7 @@ import {
 } from '../lib/composer-file-references'
 import { filesUnderDirectory, loadWorkspaceFileIndex } from '../lib/workspace-file-index'
 import { resolveWriteRuntimeBannerMessage } from '../lib/write-runtime-banner'
+import { shouldSuppressRuntimeErrorBanner } from '../lib/runtime-banner-visibility'
 
 const ChangeInspector = lazy(() =>
   import('./ChangeInspector').then((module) => ({ default: module.ChangeInspector }))
@@ -130,6 +136,12 @@ const TerminalPanel = lazy(() =>
 )
 const ScheduleTasksView = lazy(() =>
   import('./schedule/ScheduleTasksView').then((module) => ({ default: module.ScheduleTasksView }))
+)
+const WorkflowView = lazy(() =>
+  import('./workflow/WorkflowView').then((module) => ({ default: module.WorkflowView }))
+)
+const WorkflowRunPanel = lazy(() =>
+  import('./workflow/WorkflowRunPanel').then((module) => ({ default: module.WorkflowRunPanel }))
 )
 
 type PendingSddPlanTarget = {
@@ -332,6 +344,7 @@ export function Workbench(): ReactElement {
     liveAssistant,
     error,
     runtimeErrorDetail,
+    runtimeStatus,
     busy,
     route,
     pluginHostRoute,
@@ -346,6 +359,7 @@ export function Workbench(): ReactElement {
     openPlugins,
     openClaw,
     openSchedule,
+    openWorkflow,
     chooseWorkspace,
     clawChannels,
     activeClawChannelId,
@@ -365,6 +379,8 @@ export function Workbench(): ReactElement {
     composerPickList,
     composerModelGroups,
     disabledSkillIds,
+    composerMode,
+    setComposerMode,
     setComposerModel,
     setThreadSearch,
     renameThread,
@@ -389,6 +405,7 @@ export function Workbench(): ReactElement {
       liveAssistant: s.liveAssistant,
       error: s.error,
       runtimeErrorDetail: s.runtimeErrorDetail,
+      runtimeStatus: s.runtimeStatus,
       busy: s.busy,
       route: s.route,
       pluginHostRoute: s.pluginHostRoute,
@@ -403,6 +420,7 @@ export function Workbench(): ReactElement {
       openPlugins: s.openPlugins,
       openClaw: s.openClaw,
       openSchedule: s.openSchedule,
+      openWorkflow: s.openWorkflow,
       chooseWorkspace: s.chooseWorkspace,
       clawChannels: s.clawChannels,
       activeClawChannelId: s.activeClawChannelId,
@@ -422,6 +440,8 @@ export function Workbench(): ReactElement {
       composerPickList: s.composerPickList,
       composerModelGroups: s.composerModelGroups,
       disabledSkillIds: s.disabledSkillIds,
+      composerMode: s.composerMode,
+      setComposerMode: s.setComposerMode,
       setComposerModel: s.setComposerModel,
       setThreadSearch: s.setThreadSearch,
       renameThread: s.renameThread,
@@ -436,8 +456,8 @@ export function Workbench(): ReactElement {
     }))
   )
   const [input, setInput] = useState('')
-  const [mode, setMode] = useState<'plan' | 'agent'>('agent')
   const [useWorktreePool, setUseWorktreePool] = useState(false)
+  const [worktreeBranch, setWorktreeBranch] = useState('')
   const [composerReasoningEffort, setComposerReasoningEffort] =
     useState<ComposerReasoningEffort>('max')
   const [runtimeInfo, setRuntimeInfo] = useState<CoreRuntimeInfoJson | null>(null)
@@ -493,9 +513,10 @@ export function Workbench(): ReactElement {
   }, [composerModelGroups, writeAssistantModel, writeAssistantProviderId])
   const stageInsetClass = 'ds-stage-inset'
   const keyboardShortcuts = useKeyboardShortcutSettings()
+  const shortcutPlatform = typeof window === 'undefined' ? undefined : window.kunGui?.platform
   const keyboardShortcutBindings = useMemo(
-    () => resolveKeyboardShortcutBindings(keyboardShortcuts),
-    [keyboardShortcuts]
+    () => resolveKeyboardShortcutBindings(keyboardShortcuts, shortcutPlatform),
+    [keyboardShortcuts, shortcutPlatform]
   )
 
   const draftByThread = useRef<Record<string, string>>({})
@@ -512,6 +533,7 @@ export function Workbench(): ReactElement {
   const sddTitleSyncTimerRef = useRef<number | null>(null)
   const lastSyncedSddTitleRef = useRef<Record<string, string>>({})
   const timelineBlocks = blocks
+  const lockVisionToTextModelSwitch = route === 'chat' && timelineBlocks.some((block) => block.kind === 'user')
   const timelineLiveReasoning = liveReasoning
   const timelineLiveAssistant = liveAssistant
   const devPreviewBlocks = useMemo<ChatBlock[]>(() => {
@@ -624,11 +646,11 @@ export function Workbench(): ReactElement {
   } = useWorkbenchPlanController({
     blocks,
     busy,
-    mode,
+    mode: composerMode,
     route,
     sendMessage,
     setError,
-    setMode,
+    setComposerMode,
     setRightPanelMode,
     setRightSidebarWidth,
     t,
@@ -686,21 +708,25 @@ export function Workbench(): ReactElement {
       event.preventDefault()
 
       if (commandId === 'toggle-plan-mode') {
-        if (mode === 'plan') {
-          setMode('agent')
+        if (composerMode === 'plan') {
+          setComposerMode('agent')
         } else {
-          setMode('plan')
+          setComposerMode('plan')
           void handleGuiPlanCommand()
         }
         return
       }
       if (commandId === 'new-chat') {
-        void createThread({ useWorktreePool })
+        void createThread({ useWorktreePool, worktreeBranch })
         if (useWorktreePool) setUseWorktreePool(false)
         return
       }
       if (commandId === 'choose-workspace') {
         void chooseWorkspace()
+        return
+      }
+      if (commandId === 'toggle-terminal') {
+        toggleTerminal()
         return
       }
       if (commandId === 'settings') {
@@ -719,10 +745,12 @@ export function Workbench(): ReactElement {
     createThread,
     handleGuiPlanCommand,
     keyboardShortcutBindings,
-    mode,
+    composerMode,
     openSettings,
-    setMode,
-    useWorktreePool
+    setComposerMode,
+    toggleTerminal,
+    useWorktreePool,
+    worktreeBranch
   ])
   const showDevPreviewCard =
     route === 'chat' &&
@@ -756,6 +784,13 @@ export function Workbench(): ReactElement {
     writeFocusModePreference(enabled)
     setFocusModeEnabled(enabled)
   }
+
+  const toggleTheme = useCallback((): void => {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+    const next = isDark ? 'light' : 'dark'
+    applyTheme(next)
+    void rendererRuntimeClient.setSettings({ theme: next }).catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     const previousThreadId = prevThreadId.current
@@ -953,11 +988,18 @@ export function Workbench(): ReactElement {
     }
     return false
   }, [composerModelGroups, runtimeInfo, selectedComposerModel, selectedComposerProviderId])
+  const selectedContextWindowTokens = useMemo(() => {
+    return resolveComposerContextWindowTokens(
+      composerModelGroups,
+      selectedComposerModel,
+      selectedComposerProviderId
+    )
+  }, [composerModelGroups, selectedComposerModel, selectedComposerProviderId])
 
   const attachmentUploadEnabled = isChatAttachmentUploadEnabled({
     runtimeConnection,
     route,
-    mode,
+    mode: composerMode,
     attachmentStoreAvailable: runtimeInfo?.capabilities.attachments.available,
     modelSupportsImageInput: selectedModelSupportsImageInput
   })
@@ -1190,7 +1232,7 @@ export function Workbench(): ReactElement {
       const providerId =
         writeState.assistantProviderId.trim() || providerIdForComposerModel(composerModelGroups, model)
       const reasoningEffort = composerReasoningEffortRequestValue(composerReasoningEffort)
-      const sent = await sendMessage(prompt, mode === 'plan' ? 'plan' : 'agent', {
+      const sent = await sendMessage(prompt, composerMode === 'plan' ? 'plan' : 'agent', {
         ...(!v && attachmentIds.length > 0 ? { displayText: t('composerImageOnlyDisplay') } : {}),
         ...(model ? { model } : {}),
         ...(providerId ? { providerId } : {}),
@@ -1307,7 +1349,7 @@ export function Workbench(): ReactElement {
     // while the draft was closed or in another thread).
     void refreshSddChatTranscriptFromProvider(draft)
     setInput('')
-    setMode('agent')
+    setComposerMode('agent')
     setRoute('chat')
     if (options.openAssistant ?? runtimeConnection === 'ready') {
       setRightSidebarWidth((width) => Math.max(width, 420))
@@ -1523,7 +1565,7 @@ export function Workbench(): ReactElement {
     const model = writeAssistantModel.trim()
     const providerId = resolvedWriteAssistantProviderId.trim()
     const reasoningEffort = composerReasoningEffortRequestValue(composerReasoningEffort)
-    const sent = await sendMessage(prompt, mode === 'plan' ? 'plan' : 'agent', {
+    const sent = await sendMessage(prompt, composerMode === 'plan' ? 'plan' : 'agent', {
       displayText: v || t('composerImageOnlyDisplay'),
       ...(model ? { model } : {}),
       ...(providerId ? { providerId } : {}),
@@ -1761,7 +1803,7 @@ export function Workbench(): ReactElement {
       relativePath: planRelativePath,
       workspaceRoot: draft.workspaceRoot
     }
-    setMode('plan')
+    setComposerMode('plan')
     const sent = await sendPlanTurn(prompt, {
       displayText: t('sddGeneratePlanAction'),
       workspaceRoot: draft.workspaceRoot,
@@ -1925,7 +1967,7 @@ export function Workbench(): ReactElement {
       void handleGuiPlanCommand(planCommand.kind === 'create' ? planCommand.request : undefined)
       return
     }
-    if (route === 'chat' && mode === 'plan') {
+    if (route === 'chat' && composerMode === 'plan') {
       const prepared = await prepareChatMessage()
       if (!prepared) return
       setInput('')
@@ -2008,7 +2050,7 @@ export function Workbench(): ReactElement {
               channelId: activeClawChannelId,
               modelHint: activeClawChannel?.model,
               ...(reasoningEffort ? { reasoningEffort } : {}),
-              mode
+              mode: composerMode
             })
           : { kind: 'noop' as const }
         if (taskResult.kind === 'created') {
@@ -2022,12 +2064,12 @@ export function Workbench(): ReactElement {
         }
         if (!activeThreadId) {
           await selectClawChannel(activeClawChannelId)
-          await useChatStore.getState().sendMessage(v, mode === 'plan' ? 'plan' : 'agent', {
+          await useChatStore.getState().sendMessage(v, composerMode === 'plan' ? 'plan' : 'agent', {
             ...(reasoningEffort ? { reasoningEffort } : {})
           })
           return
         }
-        await sendMessage(v, mode === 'plan' ? 'plan' : 'agent', {
+        await sendMessage(v, composerMode === 'plan' ? 'plan' : 'agent', {
           ...(reasoningEffort ? { reasoningEffort } : {})
         })
       })()
@@ -2038,7 +2080,7 @@ export function Workbench(): ReactElement {
     setInput('')
     clearComposerAttachments()
     clearComposerFileReferences()
-    void sendMessage(prepared.text, mode === 'plan' ? 'plan' : 'agent', {
+    void sendMessage(prepared.text, composerMode === 'plan' ? 'plan' : 'agent', {
       ...(prepared.displayText ? { displayText: prepared.displayText } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(attachmentIds.length ? { attachmentIds, attachments } : {}),
@@ -2067,7 +2109,7 @@ export function Workbench(): ReactElement {
     if (activeSddDraft) dismissActiveSddDraft({ closeAssistant: true })
     setConnectPhoneSidebarOpen(false)
     setRoute('chat')
-    void createThread({ useWorktreePool })
+    void createThread({ useWorktreePool, worktreeBranch })
     if (useWorktreePool) setUseWorktreePool(false)
   }
 
@@ -2075,7 +2117,7 @@ export function Workbench(): ReactElement {
     if (activeSddDraft) dismissActiveSddDraft({ closeAssistant: true })
     setConnectPhoneSidebarOpen(false)
     setRoute('chat')
-    void createThread({ workspaceRoot, useWorktreePool })
+    void createThread({ workspaceRoot, useWorktreePool, worktreeBranch })
     if (useWorktreePool) setUseWorktreePool(false)
   }
 
@@ -2099,17 +2141,24 @@ export function Workbench(): ReactElement {
     openSchedule()
   }
 
+  const openWorkflowView = (): void => {
+    setConnectPhoneSidebarOpen(false)
+    openWorkflow()
+  }
+
   const toggleConnectPhone = (): void => {
     if (activeSddDraft) dismissActiveSddDraft({ closeAssistant: true })
     openClaw()
     setConnectPhoneSidebarOpen((open) => !open)
   }
 
-  const sidebarView: 'chat' | 'write' | 'claw' | 'schedule' =
+  const sidebarView: 'chat' | 'write' | 'claw' | 'schedule' | 'workflow' =
     route === 'claw' || (route === 'plugins' && pluginHostRoute === 'claw')
       ? 'claw'
       : route === 'schedule'
         ? 'schedule'
+      : route === 'workflow'
+        ? 'workflow'
       : route === 'write'
         ? 'write'
         : 'chat'
@@ -2169,9 +2218,12 @@ export function Workbench(): ReactElement {
     />
   )
 
+  const runtimeErrorSuppressed = shouldSuppressRuntimeErrorBanner(runtimeStatus)
+  const visibleRuntimeError = runtimeErrorSuppressed ? null : error
+  const visibleRuntimeErrorDetail = runtimeErrorSuppressed ? null : runtimeErrorDetail
   const writeRuntimeBannerMessage = resolveWriteRuntimeBannerMessage({
     runtimeConnection,
-    error,
+    error: visibleRuntimeError,
     runtimeActionNeedsConnection: t('runtimeActionNeedsConnection')
   })
   const rightPanelDockedVisible = rightPanelVisible && !planPanelInOverlay
@@ -2179,7 +2231,7 @@ export function Workbench(): ReactElement {
 
   const renderPlanPanel = (className: string): ReactElement => (
     <PlanPanel
-      workspaceRoot={workspaceRoot}
+      workspaceRoot={activeSkillWorkspace}
       activeThreadId={activeThreadId}
       runtimeReady={runtimeConnection === 'ready'}
       busy={busy}
@@ -2207,8 +2259,8 @@ export function Workbench(): ReactElement {
               <WriteAssistantPanel
                 input={input}
                 setInput={setInput}
-                mode={mode}
-                setMode={setMode}
+                mode={composerMode}
+                setMode={setComposerMode}
                 busy={busy}
                 runtimeConnection={runtimeConnection}
                 activeThreadId={activeThreadId}
@@ -2246,8 +2298,8 @@ export function Workbench(): ReactElement {
                 draft={activeSddDraft}
                 input={input}
                 setInput={setInput}
-                mode={mode}
-                setMode={setMode}
+                mode={composerMode}
+                setMode={setComposerMode}
                 busy={busy}
                 runtimeConnection={runtimeConnection}
                 activeThreadId={activeThreadId}
@@ -2418,12 +2470,14 @@ export function Workbench(): ReactElement {
               onOpenRequirementDraft={(draft) => void openSddRequirementDraftFromHistory(draft)}
               onOpenSettings={(section) => openSettings(section)}
               onOpenPlugins={openPluginsView}
+              onToggleTheme={toggleTheme}
               focusModeEnabled={focusModeEnabled}
               onFocusModeChange={updateFocusMode}
               onToggleConnectPhone={toggleConnectPhone}
               onCodeOpen={openCodeMode}
               onWriteOpen={openWriteMode}
               onScheduleOpen={openScheduleView}
+              onWorkflowOpen={openWorkflowView}
             />
             )}
           </div>
@@ -2442,18 +2496,12 @@ export function Workbench(): ReactElement {
         }`}
       >
         {route === 'plugins' ? (
-          <>
-            <div className="ds-no-drag shrink-0 px-4 pt-4">
-              <SidebarTitlebarToggleButton
-                onClick={toggleLeftSidebar}
-                title={leftSidebarCollapsed ? t('sidebarExpand') : t('sidebarCollapse')}
-                ariaLabel={leftSidebarCollapsed ? t('sidebarExpand') : t('sidebarCollapse')}
-              />
-            </div>
-            <Suspense fallback={<div className="h-full bg-ds-main" />}>
-              <PluginMarketplaceView />
-            </Suspense>
-          </>
+          <Suspense fallback={<div className="h-full bg-ds-main" />}>
+            <PluginMarketplaceView
+              leftSidebarCollapsed={leftSidebarCollapsed}
+              onToggleLeftSidebar={toggleLeftSidebar}
+            />
+          </Suspense>
         ) : route === 'schedule' ? (
           <Suspense fallback={<div className="h-full bg-ds-main" />}>
             <ScheduleTasksView
@@ -2462,9 +2510,17 @@ export function Workbench(): ReactElement {
               onOpenThread={openThread}
             />
           </Suspense>
+        ) : route === 'workflow' ? (
+          <Suspense fallback={<div className="h-full bg-ds-main" />}>
+            <WorkflowView
+              leftSidebarCollapsed={leftSidebarCollapsed}
+              onToggleLeftSidebar={toggleLeftSidebar}
+              onOpenThread={openThread}
+            />
+          </Suspense>
         ) : route === 'write' ? (
           <>
-            {writeRuntimeBannerMessage ? renderRuntimeBanner(writeRuntimeBannerMessage, runtimeErrorDetail) : null}
+            {writeRuntimeBannerMessage ? renderRuntimeBanner(writeRuntimeBannerMessage, visibleRuntimeErrorDetail) : null}
             <div className="flex min-h-0 flex-1">
               <WriteWorkspaceView
                 leftSidebarCollapsed={leftSidebarCollapsed}
@@ -2479,7 +2535,9 @@ export function Workbench(): ReactElement {
           </>
         ) : (
           <>
-        {error && !(runtimeConnection !== 'ready' && !activeThreadId) ? renderRuntimeBanner(error, runtimeErrorDetail) : null}
+        {visibleRuntimeError && !(runtimeConnection !== 'ready' && !activeThreadId)
+          ? renderRuntimeBanner(visibleRuntimeError, visibleRuntimeErrorDetail)
+          : null}
 
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1">
@@ -2498,11 +2556,11 @@ export function Workbench(): ReactElement {
           ) : (
             <section className="ds-chat-stage ds-drag flex min-h-0 min-w-0 flex-1 flex-col">
             <div className={`${stageInsetClass} flex min-h-0 min-w-0 flex-1 flex-col`}>
-            <header className="chat-topbar ds-topbar-surface relative z-10 mt-3 flex min-h-[46px] w-full shrink-0 items-stretch overflow-visible rounded-[24px]">
-              <div className="chat-topbar-grid grid w-full min-w-0 items-start gap-2.5 px-3 py-2 sm:px-4 md:pl-5 md:pr-2">
+            <header className="chat-topbar ds-topbar-surface relative z-10 flex w-full shrink-0 items-stretch overflow-visible">
+              <div className="chat-topbar-grid grid w-full min-w-0 items-center gap-2.5 px-3 py-2 sm:px-4 md:pl-5 md:pr-2">
                 <div
                   className={`chat-topbar-session flex min-w-0 items-center gap-2.5 ${
-                    leftSidebarCollapsed ? 'ds-window-controls-safe-inset' : ''
+                    leftSidebarCollapsed ? 'ds-window-controls-collapsed-titlebar-inset' : ''
                   }`}
                 >
                   <SidebarTitlebarToggleButton
@@ -2512,7 +2570,7 @@ export function Workbench(): ReactElement {
                   />
                   <SessionHeader compact className="min-w-0 flex-1" />
                 </div>
-                <div className="chat-topbar-actions flex min-w-0 flex-wrap items-center justify-end gap-2 self-start">
+                <div className="chat-topbar-actions flex min-w-0 flex-wrap items-center justify-end gap-2 self-center">
                   {busy ? (
                     <span className="inline-flex shrink-0 rounded-full bg-amber-500/16 px-2.5 py-1 text-[11.5px] font-semibold text-amber-950 dark:text-amber-100">
                       {t('running')}
@@ -2568,12 +2626,12 @@ export function Workbench(): ReactElement {
               <FloatingComposer
                 input={input}
                 setInput={setInput}
-                mode={mode}
-                setMode={setMode}
+                mode={composerMode}
+                setMode={setComposerMode}
                 busy={busy}
                 runtimeReady={runtimeConnection === 'ready'}
                 hasActiveThread={Boolean(activeThreadId)}
-                contextWindowTokens={runtimeInfo?.capabilities.model.contextWindowTokens}
+                contextWindowTokens={selectedContextWindowTokens}
                 runtimeToolCount={
                   runtimeInfo
                     ? runtimeInfo.capabilities.mcp.search?.active
@@ -2593,6 +2651,7 @@ export function Workbench(): ReactElement {
                 composerReasoningEffort={
                   route === 'chat' || route === 'claw' ? composerReasoningEffort : undefined
                 }
+                lockVisionToTextModelSwitch={lockVisionToTextModelSwitch}
                 onComposerModelChange={(modelId, providerId) => {
                   if (route === 'claw' && activeClawChannelId) {
                     void setClawChannelModel(activeClawChannelId, modelId)
@@ -2628,6 +2687,8 @@ export function Workbench(): ReactElement {
                 onInterrupt={(options) => void interrupt(options)}
                 onPlanCommand={() => void handleGuiPlanCommand()}
                 useWorktreePool={useWorktreePool}
+                worktreeBranch={worktreeBranch}
+                onWorktreeBranchChange={setWorktreeBranch}
                 onToggleWorktreeMode={() => setUseWorktreePool((v) => !v)}
                 onNewCommand={() => void createThread({ workspaceRoot: activeSkillWorkspace, forceNew: true })}
                 onReviewCommand={(target) => void reviewActiveThread(target)}
@@ -2655,7 +2716,7 @@ export function Workbench(): ReactElement {
                 />
                 <Suspense fallback={<div className="ds-surface-strong h-full w-full" />}>
                   <TerminalPanel
-                    workspaceRoot={workspaceRoot}
+                    workspaceRoot={fileTreeWorkspaceRoot}
                     height={terminalHeight}
                     className="w-full"
                     onCollapse={toggleTerminal}
@@ -2681,6 +2742,11 @@ export function Workbench(): ReactElement {
         )}
         {renderPlanPanelOverlay()}
       </main>
+      {route === 'chat' ? (
+        <Suspense fallback={null}>
+          <WorkflowRunPanel enabled />
+        </Suspense>
+      ) : null}
     </div>
   )
 }

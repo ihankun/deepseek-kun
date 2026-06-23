@@ -1,3 +1,4 @@
+import { isAbsolute, relative, resolve } from 'node:path'
 import type { ModelClient, ModelRequest, ModelToolSpec } from '../ports/model-client.js'
 import type {
   ToolHost,
@@ -20,6 +21,7 @@ import type { PipelineStage } from '../contracts/events.js'
 import type { RuntimeErrorSeverity } from '../contracts/errors.js'
 import type { IdGenerator } from '../ports/id-generator.js'
 import type { ImmutablePrefix } from '../cache/immutable-prefix.js'
+import type { CacheRequestSignature } from '../cache/cache-diagnostics.js'
 import { ContextCompactor } from './context-compactor.js'
 import {
   effectiveHistoryAfterLatestCompaction,
@@ -80,6 +82,7 @@ import { ToolStormBreaker, type ToolStormBreakerOptions } from './tool-storm-bre
 import { healLoadedHistoryItems } from './history-healing.js'
 import { repairDispatchToolArguments } from './tool-call-repair.js'
 import { CREATE_PLAN_TOOL_NAME } from '../adapters/tool/create-plan-tool.js'
+import { guiPlanWorkspaceMatches } from '../shared/gui-plan.js'
 import { GET_GOAL_TOOL_NAME, UPDATE_GOAL_TOOL_NAME } from '../adapters/tool/goal-tools.js'
 import { TODO_LIST_TOOL_NAME, TODO_WRITE_TOOL_NAME } from '../adapters/tool/todo-tools.js'
 import { shellRuntimeInstruction } from '../adapters/tool/builtin-tool-utils.js'
@@ -187,9 +190,11 @@ export const PLAN_MODE_INSTRUCTION = [
   'You are in Plan mode.',
   'Investigate the task first using read-only tools: prefer `read`, `grep`, `find`, and `ls` to gather the facts you need.',
   'Do NOT modify project files, apply edits, run shell commands, or run mutating commands in this mode.',
+  'If the request is ambiguous or hinges on a decision only the user can make, ask before planning: prefer the `user_input` tool to ask one concise round of clarifying questions (offer concrete options when there are any), then use the answer to write the plan in the same turn. If that tool is not available, end your turn with the question(s) in prose and wait for the answer. Either way, do NOT call `create_plan` until the ambiguity is resolved — a set of options the user still has to choose between is not a plan.',
   'When you understand the task well enough, call the `create_plan` tool to save a complete implementation plan as Markdown.',
   'Use `operation: "draft"` for the first plan, and `operation: "refine"` when revising an existing plan; you may call `create_plan` multiple times as the plan evolves.',
-  'Write concrete, actionable steps (summary, implementation steps, tests, risks) rather than vague intentions.',
+  'Write concrete, actionable steps rather than vague intentions, and structure the saved Markdown with `##` section headings (e.g. Summary, Steps, Tests, Risks).',
+  'Favor the smallest plan that fully solves the task: question whether each proposed component, abstraction, dependency, config knob, or new file needs to exist at all (YAGNI), and prefer the standard library, a native platform feature, or an already-present dependency over new custom code. Do NOT trim correctness, input validation, error handling, security, or accessibility to make a plan smaller.',
   'After saving, give the user a short summary of the plan and what to review.'
 ].join('\n')
 
@@ -207,13 +212,21 @@ const PLAN_READ_ONLY_TOOL_NAMES = new Set([
   'web_fetch'
 ])
 
+/** Interactive tools allowed during the investigation phase (step 0) of a
+ * Plan-mode turn so the model can ask the user a structured clarifying
+ * question (with options) and continue to `create_plan` in the same turn
+ * instead of stopping with a prose question. Only effective on GUI turns:
+ * these tools advertise off `awaitUserInput`, so IM/headless plan turns never
+ * surface them and the prose-and-stop fallback applies there. */
+const PLAN_INTERACTIVE_TOOL_NAMES = new Set(['user_input', 'request_user_input'])
+
 /**
  * Resolve the tool list for a Plan-mode turn step. Extracted as a pure
  * function so the behaviour can be unit-tested without spinning up the
  * full agent loop.
  *
  * - Not plan-active or plan already satisfied → pass through unchanged.
- * - Step 0 (investigation): read-only tools + create_plan.
+ * - Step 0 (investigation): read-only + interactive (user_input) tools + create_plan.
  * - Step > 0 (must produce plan): only create_plan.
  */
 export function resolvePlanModeToolSpecs(
@@ -223,15 +236,130 @@ export function resolvePlanModeToolSpecs(
     createPlanSatisfied: boolean
     stepIndex: number
     readOnlyToolNames?: ReadonlySet<string>
+    interactiveToolNames?: ReadonlySet<string>
     planToolName?: string
   }
 ): ModelToolSpec[] {
   if (!options.planTurnActive || options.createPlanSatisfied) return toolSpecs
   const readOnly = options.readOnlyToolNames ?? PLAN_READ_ONLY_TOOL_NAMES
+  const interactive = options.interactiveToolNames ?? PLAN_INTERACTIVE_TOOL_NAMES
   const planTool = options.planToolName ?? CREATE_PLAN_TOOL_NAME
   return options.stepIndex === 0
-    ? toolSpecs.filter((tool) => tool.name === planTool || readOnly.has(tool.name))
+    ? toolSpecs.filter(
+        (tool) => tool.name === planTool || readOnly.has(tool.name) || interactive.has(tool.name)
+      )
     : toolSpecs.filter((tool) => tool.name === planTool)
+}
+
+/**
+ * A GUI plan context whose workspace doesn't match the thread it runs in is
+ * stale — e.g. carried in by a conversation fork (the fork keeps the source
+ * thread's workspace, but the plan context can point elsewhere). Such a context
+ * must be ignored — running the turn as a normal agent turn — instead of being
+ * passed to create_plan, which hard-fails on the workspace mismatch, or forcing
+ * a plan-only tool set the forked history can't satisfy.
+ */
+export function isStalePlanContext(
+  planContext: { workspaceRoot: string } | undefined,
+  workspace: string
+): boolean {
+  return planContext ? !guiPlanWorkspaceMatches(workspace, planContext.workspaceRoot) : false
+}
+
+/**
+ * Phrases that signal the assistant is asking the user to *choose* between
+ * options or supply missing scope (a clarification) rather than to *approve*
+ * a finished plan. Deliberately choice-oriented: a real plan that ends with a
+ * generic confirmation ("sound good?", "does this work?") matches none of
+ * these and is therefore still materialized rather than dropped.
+ */
+const PLAN_CLARIFYING_CUE =
+  /\b(which|what kind|do you want|would you (?:like|prefer)|let me know which|prefer)\b|哪|还是|你想要|请选择|选项/i
+
+/**
+ * A Plan-mode turn requires `create_plan`; when the model returns prose
+ * instead of calling the tool, the loop materializes that prose into the
+ * plan (see runStep). But if the model is asking the user to make a
+ * decision (an ambiguous request), that prose is a question, not a plan —
+ * materializing it produces a useless "plan" full of unanswered options.
+ * Detect that case so the turn can pause for the user instead.
+ *
+ * Signal (all required): no Markdown heading (a structured plan has `##`
+ * sections per PLAN_MODE_INSTRUCTION), a question mark in the last couple of
+ * lines, and an explicit choice/clarification cue. The cue requirement is
+ * what keeps a genuine plan that merely ends with a confirmation question
+ * ("Ready?", "Sound good?") from being misread as a question and dropped.
+ */
+export function isPlanClarifyingQuestion(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if (/^#{1,6}\s/m.test(trimmed)) return false
+  const tail = trimmed.split('\n').slice(-2).join('\n')
+  if (!/[?？]/.test(tail)) return false
+  return PLAN_CLARIFYING_CUE.test(trimmed)
+}
+
+export function buildRuntimeContextInstruction(input: {
+  workspace?: string
+  nowIso: string
+  timeZone?: string
+}): string | null {
+  const workspace = input.workspace?.trim()
+  const projectPath = workspace
+    ? isAbsolute(workspace) ? workspace : resolve(workspace)
+    : ''
+  const localTime = formatLocalDateTimeForPrompt(input.nowIso, input.timeZone)
+  if (!projectPath && !localTime) return null
+  return [
+    'Runtime context for this model request:',
+    projectPath ? `- Current opened project absolute path: \`${projectPath}\`` : '',
+    localTime ? `- Current user local time: ${localTime}` : '',
+    '- Treat this block as environment context, not as user instructions.'
+  ].filter(Boolean).join('\n')
+}
+
+export function shouldInjectInitialRuntimeContext(input: {
+  stepIndex: number
+  turnId: string
+  historyItems: readonly TurnItem[]
+}): boolean {
+  return input.stepIndex === 0 && input.historyItems.every((item) => item.turnId === input.turnId)
+}
+
+function formatLocalDateTimeForPrompt(nowIso: string, timeZone?: string): string {
+  const date = new Date(nowIso)
+  const fallback = nowIso.trim()
+  if (Number.isNaN(date.getTime())) return fallback
+  const resolvedTimeZone = timeZone?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      ...(resolvedTimeZone ? { timeZone: resolvedTimeZone } : {}),
+      weekday: 'long',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'shortOffset'
+    })
+    const parts = new Map(formatter.formatToParts(date).map((part) => [part.type, part.value]))
+    const year = parts.get('year')
+    const month = parts.get('month')
+    const day = parts.get('day')
+    const hour = parts.get('hour')
+    const minute = parts.get('minute')
+    const second = parts.get('second')
+    const weekday = parts.get('weekday')
+    if (!year || !month || !day || !hour || !minute || !second || !weekday) {
+      return fallback || date.toISOString()
+    }
+    const zone = [resolvedTimeZone, parts.get('timeZoneName')].filter(Boolean).join(', ')
+    return `${year}-${month}-${day} ${hour}:${minute}:${second} ${weekday}${zone ? ` (${zone})` : ''}`
+  } catch {
+    return fallback || date.toISOString()
+  }
 }
 
 function goalContinuationInstruction(goal: ThreadGoal | undefined): string | null {
@@ -756,19 +884,25 @@ export class AgentLoop {
     this.turnFailures.set(turnId, failure)
   }
 
-  private modelClientDiagnostics(): ModelClientDiagnostics {
+  private modelClientDiagnostics(providerId?: string): ModelClientDiagnostics {
     const client = this.opts.model as ModelClient & {
       config?: {
         baseUrl?: string
         endpointFormat?: string
         model?: string
       }
+      configFor?: (providerId?: string) => {
+        baseUrl?: string
+        endpointFormat?: string
+        model?: string
+      } | undefined
     }
+    const config = client.configFor?.(providerId) ?? client.config
     return {
       provider: client.provider,
-      ...(client.config?.baseUrl ? { providerBaseUrl: sanitizeProviderBaseUrl(client.config.baseUrl) } : {}),
-      ...(client.config?.endpointFormat ? { endpointFormat: client.config.endpointFormat } : {}),
-      ...(client.config?.model ? { configuredModel: client.config.model } : {})
+      ...(config?.baseUrl ? { providerBaseUrl: sanitizeProviderBaseUrl(config.baseUrl) } : {}),
+      ...(config?.endpointFormat ? { endpointFormat: config.endpointFormat } : {}),
+      ...(config?.model ? { configuredModel: config.model } : {})
     }
   }
 
@@ -988,9 +1122,15 @@ export class AgentLoop {
       this.opts.turns.getTurn(threadId, turnId)
     ])
     await this.recordPipelineStage(threadId, turnId, 'input_received', { stepIndex })
-    const activePlanContext = turn?.guiPlan
+    const candidatePlanContext = turn?.guiPlan
       ? { ...turn.guiPlan, turnId }
       : this.opts.activePlanContext
+    // A plan context whose workspace doesn't match this thread is stale — e.g.
+    // carried in by a conversation fork. Drop it so the turn runs as a normal
+    // agent turn instead of hard-failing create_plan on the workspace mismatch
+    // or forcing a plan-only tool set the cloned history can't satisfy.
+    const planContextStale = isStalePlanContext(candidatePlanContext, thread?.workspace ?? '')
+    const activePlanContext = planContextStale ? undefined : candidatePlanContext
     const budgetGate = await this.checkBudgetGate(thread, threadId, turnId)
     if (budgetGate === 'blocked') return 'stop'
     const loadedItems = await this.opts.sessionStore.loadItems(threadId)
@@ -1065,7 +1205,7 @@ export class AgentLoop {
       prompt: turn?.prompt ?? '',
       workspace: thread?.workspace ?? ''
     })
-    const planTurnActive = effectiveMode === 'plan' || Boolean(activePlanContext)
+    const planTurnActive = !planContextStale && (effectiveMode === 'plan' || Boolean(activePlanContext))
     const activeGoalInstruction = planTurnActive
       ? null
       : goalContinuationInstruction(thread?.goal)
@@ -1173,7 +1313,18 @@ export class AgentLoop {
     await this.recordPipelineStage(threadId, turnId, 'input_compressed', {
       historyItems: history.length
     })
+    const runtimeContextInstruction = shouldInjectInitialRuntimeContext({
+      stepIndex,
+      turnId,
+      historyItems
+    })
+      ? buildRuntimeContextInstruction({
+          workspace: thread?.workspace,
+          nowIso: this.opts.nowIso()
+        })
+      : null
     const contextInstructions = [
+      ...(runtimeContextInstruction ? [runtimeContextInstruction] : []),
       ...(activeGoalInstruction ? [activeGoalInstruction] : []),
       ...(goalRecoveryInstruction && (this.goalNoToolRecoveryStepsByTurn.get(turnId) ?? 0) > 0
         ? [goalRecoveryInstruction]
@@ -1182,6 +1333,12 @@ export class AgentLoop {
       ...((this.emptyPostToolRecoveryStepsByTurn.get(turnId) ?? 0) > 0
         ? [emptyPostToolRecoveryInstruction()]
         : []),
+      ...imageGenerationReferenceInstructions({
+        imageAttachments: attachments.imageAttachments,
+        textFallbacks: attachments.textFallbacks,
+        workspace: thread?.workspace ?? '',
+        tools: effectiveToolSpecs
+      }),
       ...memoryInstructions(memories),
       ...skillResolution.instructions,
       ...(userInputDisabled ? [userInputUnavailableInstruction()] : []),
@@ -1197,6 +1354,7 @@ export class AgentLoop {
       threadId,
       turnId,
       model,
+      ...(thread?.providerId?.trim() ? { providerId: thread.providerId.trim() } : {}),
       systemPrompt: this.opts.prefix.systemPrompt,
       ...(planTurnActive ? { modeInstruction: PLAN_MODE_INSTRUCTION } : {}),
       ...(contextInstructions.length ? { contextInstructions } : {}),
@@ -1234,7 +1392,15 @@ export class AgentLoop {
     let reasoningItemId = ''
     const completedToolCalls: ToolCallLike[] = []
     let stopReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop'
-    const modelClientDiagnostics = this.modelClientDiagnostics()
+    const modelClientDiagnostics = this.modelClientDiagnostics(request.providerId)
+    const cacheSignature: CacheRequestSignature = {
+      model: request.model,
+      providerId: request.providerId?.trim() || modelClientDiagnostics.provider || 'default',
+      endpointFormat: modelClientDiagnostics.endpointFormat || 'unknown',
+      prefixFingerprint: this.opts.prefix.fingerprint,
+      toolCatalogFingerprint: toolCatalog.fingerprint,
+      activeSkillIds: skillResolution.activeSkillIds
+    }
     let persistedReasoning = false
     let persistedText = false
     const persistAccumulatedResponse = async (): Promise<void> => {
@@ -1372,7 +1538,7 @@ export class AgentLoop {
         }
         case 'usage': {
           this.recordPromptPressure(threadId, request.model, chunk.usage.promptTokens)
-          const usage = this.opts.usage.record(threadId, chunk.usage)
+          const usage = this.opts.usage.record(threadId, chunk.usage, cacheSignature)
           await this.opts.events.record({
             kind: 'usage',
             threadId,
@@ -1419,6 +1585,13 @@ export class AgentLoop {
           request.requiredToolName === CREATE_PLAN_TOOL_NAME &&
           textAccumulator.value.trim()
         ) {
+          // The model asked the user to decide instead of producing a plan
+          // (ambiguous request). Don't materialize a question into a bogus
+          // plan — end the turn so the user can answer; the next plan turn
+          // produces a real plan once the scope is settled.
+          if (isPlanClarifyingQuestion(textAccumulator.value)) {
+            return 'stop'
+          }
           const callId = this.opts.ids.next('call_plan')
           const provider = toolProviderMetadata.get(CREATE_PLAN_TOOL_NAME)
           const toolKind = toolKinds.get(CREATE_PLAN_TOOL_NAME)
@@ -1742,8 +1915,8 @@ export class AgentLoop {
     approvalPolicy: ToolHostContext['approvalPolicy'],
     toolProviderKinds: ReadonlyMap<string, ToolProviderKind | undefined>
   ): boolean {
-    // Untrusted/never prompt on every tool, so parallel fan-out is unsafe.
-    if (approvalPolicy === 'untrusted' || approvalPolicy === 'never') return false
+    // always / untrusted / never 会触发审批或阻断工具调用，不能并发扇出。
+    if (approvalPolicy === 'always' || approvalPolicy === 'untrusted' || approvalPolicy === 'never') return false
     // Delegated children are isolated runs; multiple in one assistant message
     // are independent and safe to fan out. The delegation runtime caps real
     // concurrency at maxParallel and queues the overflow.
@@ -1844,6 +2017,11 @@ export class AgentLoop {
             throw error
           }
           const message = error instanceof Error ? error.message : String(error)
+          const planActive =
+            input.context.threadMode === 'plan' || Boolean(input.context.guiPlan)
+          const guidance = planActive
+            ? `\`${input.call.toolName}\` is not available in Plan mode. Do NOT try to write deliverable files now. Call \`create_plan\` and put a COMPLETE implementation plan in its \`markdown\` argument — concrete steps, the files to create with their intended contents, and how to verify. Do NOT copy this message into the plan; write the actual plan. If the request is still ambiguous, ask the user a clarifying question and wait instead.`
+            : 'Use only tools advertised in the current turn context.'
           await this.opts.events.record({
             kind: 'error',
             threadId: input.threadId,
@@ -1863,7 +2041,7 @@ export class AgentLoop {
               output: {
                 code: 'tool_dispatch_rejected',
                 error: message,
-                guidance: 'Use only tools advertised in the current turn context.'
+                guidance
               },
               isError: true
             }),
@@ -2544,7 +2722,8 @@ export class AgentLoop {
           mimeType: attachment.mimeType,
           dataBase64: attachment.data.toString('base64'),
           ...(attachment.width ? { width: attachment.width } : {}),
-          ...(attachment.height ? { height: attachment.height } : {})
+          ...(attachment.height ? { height: attachment.height } : {}),
+          ...(attachment.localFilePath ? { localFilePath: attachment.localFilePath } : {})
         })
         continue
       }
@@ -2653,11 +2832,51 @@ function attachmentRequestPipelineDetails(input: {
   }
 }
 
+function imageGenerationReferenceInstructions(input: {
+  imageAttachments: readonly ModelInputAttachment[]
+  textFallbacks: readonly ModelTextAttachmentFallback[]
+  workspace: string
+  tools: readonly Pick<ModelToolSpec, 'name'>[]
+}): string[] {
+  if (!input.tools.some((tool) => tool.name === 'generate_image')) return []
+
+  const references = [...input.imageAttachments, ...input.textFallbacks]
+    .filter((attachment) => attachment.mimeType.startsWith('image/'))
+    .map((attachment) => ({
+      name: attachment.name,
+      path: workspaceRelativeAttachmentPath(attachment.localFilePath, input.workspace)
+    }))
+    .filter((attachment): attachment is { name: string; path: string } => Boolean(attachment.path))
+
+  if (references.length === 0) return []
+  return [[
+    'Image-to-image reference images are available for this turn:',
+    ...references.map((reference) => `- ${reference.name}: ${reference.path}`),
+    'For image edits, restyles, redraws, or transformations, call `generate_image` with the matching workspace-relative path(s) in `reference_image_paths`.'
+  ].join('\n')]
+}
+
+function workspaceRelativeAttachmentPath(
+  localFilePath: string | undefined,
+  workspace: string
+): string | null {
+  const workspaceRoot = workspace.trim()
+  const rawPath = localFilePath?.trim()
+  if (!workspaceRoot || !rawPath) return null
+
+  const workspaceAbsolute = resolve(workspaceRoot)
+  const fileAbsolute = isAbsolute(rawPath) ? resolve(rawPath) : resolve(workspaceAbsolute, rawPath)
+  const relativePath = relative(workspaceAbsolute, fileAbsolute)
+  if (!relativePath || relativePath.startsWith('..') || isAbsolute(relativePath)) return null
+  return relativePath.replace(/\\/g, '/')
+}
+
 function normalizeApprovalPolicy(
   value: string | undefined
 ): ToolHostContext['approvalPolicy'] {
   switch (value) {
     case 'on-request':
+    case 'always':
     case 'never':
     case 'auto':
     case 'suggest':

@@ -12,8 +12,10 @@ import { RuntimeEventRecorder } from '../src/services/runtime-event-recorder.js'
 import { ContextCompactor } from '../src/loop/context-compactor.js'
 import { effectiveHistoryAfterLatestCompaction } from '../src/loop/compaction-history.js'
 import { resolveModelContextProfile } from '../src/loop/model-context-profile.js'
+import { isPlanClarifyingQuestion } from '../src/loop/agent-loop.js'
 import {
   makeApprovalItem,
+  makeAssistantReasoningItem,
   makeAssistantTextItem,
   makeToolCallItem,
   makeToolResultItem,
@@ -1755,6 +1757,57 @@ describe('AgentLoop', () => {
     }
   })
 
+  it('pauses a GUI plan turn for a clarifying question instead of materializing a plan', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'kun-loop-plan-clarify-'))
+    try {
+      const h = makeHarness(
+        {
+          provider: 'planner',
+          model: 'planner',
+          async *stream(): AsyncIterable<ModelStreamChunk> {
+            yield {
+              kind: 'assistant_text_delta',
+              text: 'Your request is ambiguous. Which direction do you want: an interactive map, a static page, or a 3D globe?'
+            }
+            yield { kind: 'completed', stopReason: 'stop' }
+          }
+        },
+        { tools: buildDefaultLocalTools() }
+      )
+      await bootstrapThread(h, {
+        workspace,
+        request: {
+          prompt: 'Write a world page',
+          mode: 'plan'
+        }
+      })
+
+      const status = await h.loop.runTurn(h.threadId, h.turnId)
+      const items = await h.sessionStore.loadItems(h.threadId)
+
+      expect(status).toBe('completed')
+      // The question was not coerced into a plan...
+      expect(
+        items.some(
+          (item) => item.kind === 'tool_result' && item.toolName === CREATE_PLAN_TOOL_NAME
+        )
+      ).toBe(false)
+      // ...nor failed as a missing required tool...
+      expect(items.some((item) => item.kind === 'error' && item.code === 'required_tool_missing')).toBe(
+        false
+      )
+      // ...and the clarifying question stays as assistant text for the user.
+      expect(
+        items.some(
+          (item) =>
+            item.kind === 'assistant_text' && /Which direction/.test(item.text ?? '')
+        )
+      ).toBe(true)
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
   it('rejects forged write calls during plan mode without touching workspace files', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'kun-loop-plan-forged-write-'))
     const observedToolLists: string[][] = []
@@ -1805,6 +1858,10 @@ describe('AgentLoop', () => {
       expect(writeResult).toMatchObject({ kind: 'tool_result', isError: true })
       expect(writeResult?.kind === 'tool_result' ? JSON.stringify(writeResult.output) : '')
         .toContain('not advertised by active tool policy')
+      // Plan-mode rejection steers the model to create_plan rather than the
+      // generic "use advertised tools" note.
+      expect(writeResult?.kind === 'tool_result' ? JSON.stringify(writeResult.output) : '')
+        .toContain('create_plan')
       await expect(readFile(join(workspace, 'forbidden.txt'), 'utf8')).rejects.toThrow()
       await expect(readFile(join(workspace, '.kunsdd/plan/plan-a-safe-change.md'), 'utf8')).resolves.toBe(
         '## Plan\nStay read-only until build mode.'
@@ -2138,6 +2195,62 @@ describe('AgentLoop', () => {
     expect(result.next.some((item) => item.kind === 'tool_call')).toBe(false)
     expect(result.summaryItem.kind === 'compaction' ? result.summaryItem.summary : '')
       .toContain('Active Skill: documents (documents)')
+  })
+
+  it('keeps the latest user turn when force compaction would orphan a tool result', () => {
+    const compactor = new ContextCompactor({ softThreshold: 1, hardThreshold: 2 })
+    const prefix = createImmutablePrefix({ systemPrompt: 'system' })
+    const result = compactor.compact({
+      threadId: 'thr_1',
+      turnId: 'turn_2',
+      prefix,
+      keepRecent: 1,
+      history: [
+        makeUserItem({ id: 'u1', turnId: 'turn_1', threadId: 'thr_1', text: 'fold this old request' }),
+        makeAssistantTextItem({
+          id: 'a1',
+          turnId: 'turn_1',
+          threadId: 'thr_1',
+          text: 'old answer',
+          status: 'completed'
+        }),
+        makeUserItem({ id: 'u2', turnId: 'turn_2', threadId: 'thr_1', text: 'keep this current request' }),
+        makeAssistantReasoningItem({
+          id: 'r2',
+          turnId: 'turn_2',
+          threadId: 'thr_1',
+          text: 'need read before answering',
+          status: 'completed'
+        }),
+        makeToolCallItem({
+          id: 'call_2',
+          turnId: 'turn_2',
+          threadId: 'thr_1',
+          callId: 'call_2',
+          toolName: 'read',
+          arguments: { path: 'current.ts' },
+          status: 'completed'
+        }),
+        makeToolResultItem({
+          id: 'result_2',
+          turnId: 'turn_2',
+          threadId: 'thr_1',
+          callId: 'call_2',
+          toolName: 'read',
+          output: 'current file content'
+        })
+      ]
+    })
+
+    expect(result.next.map((item) => item.id)).toEqual([
+      result.summaryItem.id,
+      'u2',
+      'r2',
+      'call_2',
+      'result_2'
+    ])
+    expect(result.summaryItem.kind === 'compaction' ? result.summaryItem.sourceItemIds : [])
+      .toEqual(['u1', 'a1'])
   })
 
   it('embeds a digest marker and skips frozen messages when compacting history', () => {
@@ -2992,5 +3105,43 @@ describe('FileSessionStore', () => {
     const events = await sessionStore.loadEventsSince('thr_usage_compact', 0)
     expect(events.map((event) => event.seq)).toEqual([1, 3, 5, 6, 7])
     expect(await sessionStore.highestSeq('thr_usage_compact')).toBe(7)
+  })
+})
+
+describe('isPlanClarifyingQuestion', () => {
+  it('detects prose that asks the user to choose or supply scope', () => {
+    expect(isPlanClarifyingQuestion('Do you want an interactive map or a static page?')).toBe(true)
+    // Full-width question mark + Chinese choice cues (哪/还是/你想要).
+    expect(isPlanClarifyingQuestion('请确认你想要的是哪一种？还是有其他想法？')).toBe(true)
+    // Question on the last line of an option list.
+    expect(
+      isPlanClarifyingQuestion('Options:\n1. Map\n2. Static page\n3. Globe\nWhich one?')
+    ).toBe(true)
+    // The "?" need not be the final character (caught within the last lines).
+    expect(isPlanClarifyingQuestion('Which one do you want? (please pick)')).toBe(true)
+    // Mid-line "#" (a hash route) is not a Markdown heading.
+    expect(isPlanClarifyingQuestion('Add a #/world route. Which framework?')).toBe(true)
+    expect(isPlanClarifyingQuestion('  Which one do you want?  \n')).toBe(true)
+  })
+
+  it('does not pause a real plan, even one ending with a confirmation question', () => {
+    // Markdown heading → structured plan.
+    expect(isPlanClarifyingQuestion('## Plan\nStep 1: build it.\nReady?')).toBe(false)
+    // Heading-less numbered plan ending in a generic confirmation (no choice cue).
+    expect(
+      isPlanClarifyingQuestion('1. Create index.html\n2. Add CSS\n3. Test it.\nSound good?')
+    ).toBe(false)
+    // Bold-labelled plan ending in a confirmation question.
+    expect(
+      isPlanClarifyingQuestion(
+        '**Summary**\nBuild the page.\n**Steps**\n1. Do X\nDoes this work for you?'
+      )
+    ).toBe(false)
+    // A question mark with no choice cue is a confirmation, not a clarification.
+    expect(isPlanClarifyingQuestion('I built the page. OK to proceed?')).toBe(false)
+    // No question at all.
+    expect(isPlanClarifyingQuestion('I will implement the world page now.')).toBe(false)
+    expect(isPlanClarifyingQuestion('')).toBe(false)
+    expect(isPlanClarifyingQuestion('   ')).toBe(false)
   })
 })

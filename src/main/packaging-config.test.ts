@@ -1,5 +1,5 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { builtinModules, createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -20,6 +20,28 @@ function tempRoot(): string {
 function touch(path: string): void {
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, '{}\n', 'utf8')
+}
+
+function preloadSourceFiles(dir = join(process.cwd(), 'src/preload')): string[] {
+  return readdirSync(dir).flatMap((entry) => {
+    const path = join(dir, entry)
+    const stat = statSync(path)
+    if (stat.isDirectory()) return preloadSourceFiles(path)
+    return path.endsWith('.ts') && !path.endsWith('.d.ts') ? [path] : []
+  })
+}
+
+function forbiddenPreloadImports(source: string): string[] {
+  const builtins = new Set(builtinModules.map((moduleName) => moduleName.replace(/^node:/, '')))
+  const imports = source.matchAll(/(?:from\s+|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g)
+  return [...imports]
+    .map((match) => match[1])
+    .filter((specifier) => {
+      const moduleName = specifier.replace(/^node:/, '')
+      return specifier.startsWith('node:') ||
+        builtins.has(moduleName) ||
+        builtins.has(moduleName.split('/')[0] ?? moduleName)
+    })
 }
 
 function loadBuilderConfigWithEnv(env: Record<string, string | undefined>): typeof builderConfig {
@@ -132,7 +154,38 @@ describe('electron-builder Kun packaging', () => {
   })
 
   it('uses the rounded Kun icon for Windows installers and shortcuts', () => {
-    expect(builderConfig.win.icon).toBe('./src/asset/img/kun_mac.png')
+    // Windows ships a multi-size .ico (16/24/32/48/64/72/96/128/256) generated
+    // from the rounded kun_mac.png so Explorer/desktop render crisp small icons
+    // instead of downscaling a single 1024px PNG (#222). The .ico still carries
+    // the rounded Kun artwork — it is derived from kun_mac.png.
+    expect(builderConfig.win.icon).toBe('./build/icon.ico')
+  })
+
+  it('uses a process-tree shutdown guard for Windows overwrite installs', () => {
+    const installerScript = readFileSync(join(process.cwd(), 'build/installer.nsh'), 'utf8')
+
+    expect(builderConfig.nsis.include).toBe('build/installer.nsh')
+    expect(installerScript).toContain('customCheckAppRunning')
+    expect(installerScript).toContain('customUnInstallCheck')
+    expect(installerScript).toContain('customUnInstallCheckCurrentUser')
+    expect(installerScript).toContain('kunContinueAfterOldUninstallerFailure')
+    expect(installerScript).toContain('KUN_INSTALLER_UNINSTALL_EXE')
+    expect(installerScript).toContain('${UNINSTALL_FILENAME}')
+    expect(installerScript).toContain('old-uninstaller.exe')
+    expect(installerScript).toContain('$$_.ExecutablePath')
+    expect(installerScript).toContain("$$r=[IO.Path]::GetFullPath")
+    expect(installerScript).toContain('taskkill.exe /PID $$_.ProcessId /T /F')
+    expect(installerScript).toContain('RMDir /r "$INSTDIR"')
+    expect(installerScript).toContain('!ifdef BUILD_UNINSTALLER')
+    expect(installerScript).toContain('${ifNot} ${isUpdated}')
+    expect(installerScript).toContain('MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)"')
+    expect(installerScript).not.toContain('Stop-Process -Id')
+  })
+
+  it('keeps sandboxed preload free of Node builtin imports', () => {
+    for (const sourcePath of preloadSourceFiles()) {
+      expect(forbiddenPreloadImports(readFileSync(sourcePath, 'utf8'))).toEqual([])
+    }
   })
 
   it('requires Apple secure timestamps when Developer ID signing is enabled', () => {

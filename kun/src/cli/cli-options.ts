@@ -12,6 +12,7 @@ import {
   ModelConfigSchema,
   QualityConfigSchema,
   RuntimeTuningConfigSchema,
+  ServeProviderConfigSchema,
   StorageConfigSchema,
   TokenEconomyConfigSchema
 } from '../config/kun-config.js'
@@ -26,7 +27,7 @@ import {
 } from '../contracts/model-endpoint-format.js'
 import { HooksConfigSchema } from '../hooks/hook-config.js'
 
-export const DEFAULT_SERVE_PORT = 8899
+export const DEFAULT_SERVE_PORT = 18899
 export const DEFAULT_SERVE_MODEL = DEFAULT_KUN_MODEL
 
 /**
@@ -54,6 +55,7 @@ export const ServeOptionsSchema = z.object({
   tokenEconomy: TokenEconomyConfigSchema.optional(),
   insecure: z.boolean().default(false),
   storage: StorageConfigSchema.default(DEFAULT_STORAGE_CONFIG),
+  providers: z.record(z.string().min(1), ServeProviderConfigSchema).optional(),
   models: ModelConfigSchema.optional(),
   contextCompaction: ContextCompactionConfigSchema.optional(),
   runtime: RuntimeTuningConfigSchema.optional(),

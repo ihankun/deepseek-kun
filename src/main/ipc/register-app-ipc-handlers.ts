@@ -13,7 +13,11 @@ import {
   type ClawRuntimeStatus,
   type ScheduleRunResult,
   type ScheduleRuntimeStatus,
-  type ScheduleTaskFromTextResult
+  type ScheduleTaskFromTextResult,
+  type WorkflowCodeCheckResult,
+  type WorkflowNodeTestResult,
+  type WorkflowRunResult,
+  type WorkflowRuntimeStatus
 } from '../../shared/app-settings'
 import type {
   ClawImInstallPollResult,
@@ -30,6 +34,7 @@ import type { GuiUpdateDownloadResult, GuiUpdateInfo, GuiUpdateInstallResult, Gu
 import {
   clawMirrorPayloadSchema,
   clawImInstallPollPayloadSchema,
+  clawImTelegramTokenPayloadSchema,
   confirmDialogPayloadSchema,
   clawTaskFromTextPayloadSchema,
   computerUsePermissionKindSchema,
@@ -37,6 +42,9 @@ import {
   desktopCommandSchema,
   defaultPathSchema,
   gitBranchPayloadSchema,
+  gitCheckpointCreatePayloadSchema,
+  gitCheckpointRestorePayloadSchema,
+  gitWorktreeRemoveSchema,
   guiUpdateChannelSchema,
   logErrorPayloadSchema,
   notificationPayloadSchema,
@@ -54,10 +62,15 @@ import {
   runtimeRequestPayloadSchema,
   scheduleTaskFromTextPayloadSchema,
   shellOpenExternalUrlSchema,
+  skillGithubImportPayloadSchema,
   skillListPayloadSchema,
   skillSaveFilePayloadSchema,
   settingsPatchSchema,
   streamIdSchema,
+  workflowRunNodePayloadSchema,
+  workflowTestNodePayloadSchema,
+  workflowResolveApprovalPayloadSchema,
+  workflowCodeCheckPayloadSchema,
   uiPluginIdPayloadSchema,
   workspaceDirectoryCreatePayloadSchema,
   workspaceClipboardImageSavePayloadSchema,
@@ -69,6 +82,9 @@ import {
   workspaceFileTargetPayloadSchema,
   workspaceFileWatchPayloadSchema,
   workspaceFileWritePayloadSchema,
+  localWhisperDownloadPayloadSchema,
+  localWhisperModelIdPayloadSchema,
+  localWhisperSourceStatusPayloadSchema,
   speechTranscribePayloadSchema,
   writeExportPayloadSchema,
   writeRichClipboardPayloadSchema,
@@ -85,7 +101,19 @@ import type { JsonSettingsStore } from '../settings-store'
 import { probeModelProvider } from '../provider-connection'
 import type { ClawRuntime } from '../claw-runtime'
 import type { ScheduleRuntime } from '../schedule-runtime'
-import { createAndSwitchGitBranch, getGitBranches, switchGitBranch } from '../services/git-service'
+import { verifyTelegramBotToken } from '../telegram-runtime'
+import type { WorkflowRuntime } from '../workflow-runtime'
+import { checkWorkflowCode } from '../workflow-runtime'
+import {
+  checkoutGitBranchWorktree,
+  createAndSwitchGitBranch,
+  createGitBranchWorktree,
+  getGitBranches,
+  listGitBranchWorktrees,
+  removeGitBranchWorktree,
+  switchGitBranch
+} from '../services/git-service'
+import { createGitCheckpoint, restoreGitCheckpoint } from '../services/git-checkpoint-service'
 import {
   abortMerge,
   abortRebase,
@@ -115,7 +143,6 @@ import {
   expandHomePath,
   listEditorsResult,
   listWorkspaceDirectory,
-  normalizeSkillFolderName,
   openEditorPath,
   openPathWithShell,
   readClipboardImage,
@@ -138,10 +165,20 @@ import { requestWriteInfographic } from '../services/write-infographic-service'
 import { authorizePrototypePath } from '../services/prototype-embed-registry'
 import { requestSpeechTranscription } from '../services/speech-to-text-service'
 import {
+  cancelLocalWhisperModel,
+  deleteLocalWhisperModel,
+  checkLocalWhisperDownloadSources,
+  downloadLocalWhisperModel,
+  getLocalWhisperModelStatus,
+  setLocalWhisperProgressEmitter
+} from '../services/local-whisper-service'
+import {
   getComputerUsePermissions,
   requestComputerUsePermission
 } from '../services/computer-use-permissions'
 import { copyWriteDocumentAsRichText, exportWriteDocument } from '../services/write-export-service'
+import { importGithubSkillsToRoot } from '../services/github-skill-import-service'
+import { saveGuiSkillPackage } from '../services/skill-save-service'
 import { listGuiSkillRoots, listGuiSkills } from '../services/skill-service'
 
 type GuiUpdaterModule = typeof import('../gui-updater')
@@ -168,6 +205,7 @@ type RegisterAppIpcHandlersOptions = {
   fetchUpstreamModels: () => Promise<UpstreamModelsResult>
   getClawRuntime: () => ClawRuntime | null
   getScheduleRuntime: () => ScheduleRuntime | null
+  getWorkflowRuntime: () => WorkflowRuntime | null
   startFeishuInstallQrcode: (isLark: boolean) => Promise<ClawImInstallQrResult>
   pollFeishuInstall: (deviceCode: string) => Promise<ClawImInstallPollResult>
   startWeixinInstallQrcode: (weixinBridgeUrl?: string) => Promise<ClawImInstallQrResult>
@@ -344,6 +382,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     fetchUpstreamModels,
     getClawRuntime,
     getScheduleRuntime,
+    getWorkflowRuntime,
     startFeishuInstallQrcode,
     pollFeishuInstall,
     startWeixinInstallQrcode,
@@ -357,6 +396,9 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     resolveLogDirectory,
     logError
   } = options
+  setLocalWhisperProgressEmitter((payload) => {
+    getMainWindow()?.webContents.send('speech:local-whisper:progress', payload)
+  })
   const workspaceFileWatchers = new Map<string, WorkspaceFileWatchRecord>()
 
   const disposeWorkspaceFileWatch = (watchId: string): boolean => {
@@ -475,7 +517,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     }
   )
 
-  ipcMain.handle('claw:task:run', async (_, taskId: unknown): Promise<ClawRunResult> => {
+  ipcMain.handle('claw:task:run', async (_, taskId: unknown): Promise<ScheduleRunResult> => {
     const normalizedTaskId = parseIpcPayload('claw:task:run', streamIdSchema, taskId)
     const scheduleRuntime = getScheduleRuntime()
     if (!scheduleRuntime) return { ok: false, message: 'Schedule runtime is not initialized.' }
@@ -487,6 +529,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       internalServerRunning: false,
       internalUrl: '',
       runningTaskIds: [],
+      queuedTaskIds: [],
       powerSaveBlockerActive: false
     }
   )
@@ -496,6 +539,57 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     const scheduleRuntime = getScheduleRuntime()
     if (!scheduleRuntime) return { ok: false, message: 'Schedule runtime is not initialized.' }
     return scheduleRuntime.runTask(normalizedTaskId)
+  })
+
+  ipcMain.handle('workflow:status', async (): Promise<WorkflowRuntimeStatus> =>
+    getWorkflowRuntime()?.status() ?? {
+      runningWorkflowIds: [],
+      nodeStatus: {},
+      nodeResults: {},
+      powerSaveBlockerActive: false,
+      pendingApprovals: []
+    }
+  )
+
+  ipcMain.handle('workflow:run', async (_, workflowId: unknown, input?: unknown): Promise<WorkflowRunResult> => {
+    const normalizedId = parseIpcPayload('workflow:run', streamIdSchema, workflowId)
+    const workflowRuntime = getWorkflowRuntime()
+    if (!workflowRuntime) return { ok: false, message: 'Workflow runtime is not initialized.' }
+    // input is validated/coerced against the trigger's input schema inside runWorkflow.
+    return workflowRuntime.runWorkflow(normalizedId, input)
+  })
+
+  ipcMain.handle('workflow:stop', async (_, workflowId: unknown): Promise<WorkflowRunResult> => {
+    const normalizedId = parseIpcPayload('workflow:stop', streamIdSchema, workflowId)
+    const workflowRuntime = getWorkflowRuntime()
+    if (!workflowRuntime) return { ok: false, message: 'Workflow runtime is not initialized.' }
+    return workflowRuntime.stopWorkflow(normalizedId)
+  })
+
+  ipcMain.handle('workflow:node:run', async (_, payload: unknown): Promise<WorkflowRunResult> => {
+    const request = parseIpcPayload('workflow:node:run', workflowRunNodePayloadSchema, payload)
+    const workflowRuntime = getWorkflowRuntime()
+    if (!workflowRuntime) return { ok: false, message: 'Workflow runtime is not initialized.' }
+    return workflowRuntime.runSingleNode(request.workflowId, request.nodeId)
+  })
+
+  ipcMain.handle('workflow:node:test', async (_, payload: unknown): Promise<WorkflowNodeTestResult> => {
+    const request = parseIpcPayload('workflow:node:test', workflowTestNodePayloadSchema, payload)
+    const workflowRuntime = getWorkflowRuntime()
+    if (!workflowRuntime) return { ok: false, message: 'Workflow runtime is not initialized.' }
+    return workflowRuntime.testNode(request.workflowId, request.nodeId, request.mockJson)
+  })
+
+  ipcMain.handle('workflow:approval:resolve', async (_, payload: unknown): Promise<{ ok: boolean }> => {
+    const request = parseIpcPayload('workflow:approval:resolve', workflowResolveApprovalPayloadSchema, payload)
+    const workflowRuntime = getWorkflowRuntime()
+    if (!workflowRuntime) return { ok: false }
+    return { ok: workflowRuntime.resolveApproval(request.token, request.decision) }
+  })
+
+  ipcMain.handle('workflow:code:check', async (_, payload: unknown): Promise<WorkflowCodeCheckResult> => {
+    const request = parseIpcPayload('workflow:code:check', workflowCodeCheckPayloadSchema, payload)
+    return checkWorkflowCode(request.language, request.code)
   })
 
   ipcMain.handle(
@@ -598,6 +692,18 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     }
   )
 
+  ipcMain.handle(
+    'claw:im-install:telegram-token',
+    async (_, payload: unknown) => {
+      const request = parseIpcPayload(
+        'claw:im-install:telegram-token',
+        clawImTelegramTokenPayloadSchema,
+        payload
+      )
+      return verifyTelegramBotToken(request.botToken)
+    }
+  )
+
   ipcMain.handle('workspace:pick-directory', async (_, defaultPath: unknown): Promise<WorkspacePickResult> => {
     const normalizedDefaultPath = parseIpcPayload(
       'workspace:pick-directory',
@@ -645,16 +751,8 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     async (_, payload: unknown) => {
       const request = parseIpcPayload('skill:save-file', skillSaveFilePayloadSchema, payload)
       try {
-        const rootPath = expandHomePath(request.rootPath)
-        if (!rootPath) {
-          return { ok: false as const, message: 'Skill directory is required.' }
-        }
-        const skillName = normalizeSkillFolderName(request.skillName)
-        const skillDir = join(rootPath, skillName)
-        const filePath = join(skillDir, 'SKILL.md')
-        await mkdir(skillDir, { recursive: true })
-        await writeFile(filePath, request.content, 'utf8')
-        return { ok: true as const, path: filePath }
+        const result = await saveGuiSkillPackage(request)
+        return { ok: true as const, path: result.path }
       } catch (error) {
         return {
           ok: false as const,
@@ -663,6 +761,11 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       }
     }
   )
+
+  ipcMain.handle('skill:import-github', async (_, payload: unknown) => {
+    const request = parseIpcPayload('skill:import-github', skillGithubImportPayloadSchema, payload)
+    return importGithubSkillsToRoot(request)
+  })
 
   ipcMain.handle('skill:list', async (_, payload: unknown) => {
     const request = parseIpcPayload('skill:list', skillListPayloadSchema, payload)
@@ -843,6 +946,43 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       return createAndSwitchGitBranch(request.workspaceRoot, request.branch)
     }
   )
+  ipcMain.handle('git:checkpoint:create', async (_, payload: unknown) => {
+    const request = parseIpcPayload('git:checkpoint:create', gitCheckpointCreatePayloadSchema, payload)
+    return createGitCheckpoint({
+      dataDir: await resolveKunThreadsDataDir(),
+      workspaceRoot: request.workspaceRoot,
+      threadId: request.threadId
+    })
+  })
+  ipcMain.handle('git:checkpoint:restore', async (_, payload: unknown) => {
+    const request = parseIpcPayload('git:checkpoint:restore', gitCheckpointRestorePayloadSchema, payload)
+    return restoreGitCheckpoint({
+      dataDir: await resolveKunThreadsDataDir(),
+      checkpointId: request.checkpointId
+    })
+  })
+  ipcMain.handle(
+    'git:checkout-branch-worktree',
+    async (_, payload: unknown) => {
+      const request = parseIpcPayload('git:checkout-branch-worktree', gitBranchPayloadSchema, payload)
+      return checkoutGitBranchWorktree(request.workspaceRoot, request.branch)
+    }
+  )
+  ipcMain.handle(
+    'git:create-branch-worktree',
+    async (_, payload: unknown) => {
+      const request = parseIpcPayload('git:create-branch-worktree', gitBranchPayloadSchema, payload)
+      return createGitBranchWorktree(request.workspaceRoot, request.branch)
+    }
+  )
+  ipcMain.handle('git:branch-worktrees', async (_, payload: unknown) => {
+    const request = parseIpcPayload('git:branch-worktrees', worktreePoolSchema, payload)
+    return listGitBranchWorktrees(request.projectPath, request.worktreeRoot)
+  })
+  ipcMain.handle('git:remove-branch-worktree', async (_, payload: unknown) => {
+    const request = parseIpcPayload('git:remove-branch-worktree', gitWorktreeRemoveSchema, payload)
+    return removeGitBranchWorktree(request)
+  })
 
   // Worktree pool management
   ipcMain.handle('worktree:acquire', async (_, payload: unknown) => {
@@ -1089,6 +1229,27 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       await store.load(),
       parseIpcPayload('speech:transcribe', speechTranscribePayloadSchema, payload)
     )
+  )
+  ipcMain.handle('speech:local-whisper:status', async (_, modelId: unknown) =>
+    getLocalWhisperModelStatus(parseIpcPayload('speech:local-whisper:status', localWhisperModelIdPayloadSchema, modelId))
+  )
+  ipcMain.handle('speech:local-whisper:download', async (_, modelId: unknown) =>
+    {
+      const payload = parseIpcPayload('speech:local-whisper:download', localWhisperDownloadPayloadSchema, modelId)
+      return downloadLocalWhisperModel(payload.modelId, payload.sourceId)
+    }
+  )
+  ipcMain.handle('speech:local-whisper:cancel', async (_, modelId: unknown) =>
+    cancelLocalWhisperModel(parseIpcPayload('speech:local-whisper:cancel', localWhisperModelIdPayloadSchema, modelId))
+  )
+  ipcMain.handle('speech:local-whisper:sources', async (_, payload: unknown) =>
+    {
+      const request = parseIpcPayload('speech:local-whisper:sources', localWhisperSourceStatusPayloadSchema, payload)
+      return checkLocalWhisperDownloadSources(request.modelId)
+    }
+  )
+  ipcMain.handle('speech:local-whisper:delete', async (_, modelId: unknown) =>
+    deleteLocalWhisperModel(parseIpcPayload('speech:local-whisper:delete', localWhisperModelIdPayloadSchema, modelId))
   )
   ipcMain.handle('write:inline-completion-debug:list', async () => listWriteInlineCompletionDebugEntries())
   ipcMain.handle('write:inline-completion-debug:clear', async () => {

@@ -2,12 +2,18 @@ import type i18next from 'i18next'
 import type { AppSettingsV1 } from '@shared/app-settings'
 import { rendererRuntimeClient } from '../agent/runtime-client'
 import type { ChatState, ChatStoreGet, ChatStoreSet, InitialSetupMode, PluginHostRoute, SettingsRouteSection } from './chat-store-types'
+import type { ComposerPlanMode } from './chat-store-helpers'
 import {
+  canSwitchComposerModel,
   composerModelSelectable,
+  composerModeForThread,
+  persistComposerMode,
   persistComposerProviderId,
   providerIdForComposerModel,
   providerIdMatchesComposerModel,
+  readThreadComposerMode,
   readThreadComposerSelection,
+  rememberThreadComposerMode,
   rememberThreadComposerSelection,
   readStoredComposerProviderId
 } from './chat-store-helpers'
@@ -17,6 +23,8 @@ type CreateAppActionsOptions = {
   get: ChatStoreGet
   i18n: typeof i18next
   persistComposerModel: (model: string) => void
+  persistComposerMode: (mode: ComposerPlanMode) => void
+  rememberThreadComposerMode: (threadId: string, mode: ComposerPlanMode) => void
   readStoredComposerModel: (allowedIds: readonly string[]) => string
   mergeComposerPickList: (upstreamOk: boolean, upstreamIds: string[]) => string[]
   fallbackComposerModel: (pickList: readonly string[], runtimeDefault: string) => string
@@ -25,6 +33,7 @@ type CreateAppActionsOptions = {
   applyTheme: (theme: AppSettingsV1['theme']) => void
   applyUiFontScale: (scale: AppSettingsV1['uiFontScale']) => void
   applyCursorSpotlight: (enabled: boolean) => void
+  applyCursorSpotlightColor: (color: AppSettingsV1['cursorSpotlightColor']) => void
   applyWriteTypography: (typography: AppSettingsV1['write']['typography']) => void
   applyDocumentLocale: (locale: AppSettingsV1['locale']) => void
   workspaceLabelFromPath: (workspaceRoot: string) => string
@@ -34,6 +43,7 @@ type CreateAppActionsOptions = {
 export function createAppActions(options: CreateAppActionsOptions): Pick<
   ChatState,
   | 'setError'
+  | 'setComposerMode'
   | 'setComposerModel'
   | 'loadComposerModels'
   | 'setRoute'
@@ -42,6 +52,7 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
   | 'openPlugins'
   | 'openClaw'
   | 'openSchedule'
+  | 'openWorkflow'
   | 'openInitialSetup'
   | 'closeInitialSetup'
   | 'selectInspectorItem'
@@ -53,6 +64,8 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
     get,
     i18n,
     persistComposerModel,
+    persistComposerMode,
+    rememberThreadComposerMode,
     readStoredComposerModel,
     mergeComposerPickList,
     fallbackComposerModel,
@@ -61,6 +74,7 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
     applyTheme,
     applyUiFontScale,
     applyCursorSpotlight,
+    applyCursorSpotlightColor,
     applyWriteTypography,
     applyDocumentLocale,
     workspaceLabelFromPath,
@@ -70,9 +84,34 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
   return {
     setError: (message) => set({ error: message }),
 
+    setComposerMode: (mode) => {
+      const activeThreadId = get().activeThreadId
+      if (activeThreadId) {
+        rememberThreadComposerMode(activeThreadId, mode)
+      } else {
+        persistComposerMode(mode)
+      }
+      set({ composerMode: mode })
+    },
+
     setComposerModel: (modelId, providerId) => {
       const nextProviderId = providerId?.trim() || providerIdForComposerModel(get().composerModelGroups, modelId)
-      const activeThreadId = get().activeThreadId
+      const state = get()
+      const lockVisionToTextSwitch =
+        state.route === 'chat' &&
+        Array.isArray(state.blocks) &&
+        state.blocks.some((block) => block.kind === 'user')
+      if (!canSwitchComposerModel(
+        lockVisionToTextSwitch,
+        state.composerModelGroups,
+        state.composerModel,
+        state.composerProviderId,
+        modelId,
+        nextProviderId
+      )) {
+        return
+      }
+      const activeThreadId = state.activeThreadId
       if (activeThreadId) {
         rememberThreadComposerSelection(activeThreadId, modelId, nextProviderId)
       } else {
@@ -172,6 +211,10 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
       set({ route: 'schedule' })
     },
 
+    openWorkflow: () => {
+      set({ route: 'workflow' })
+    },
+
     openInitialSetup: (mode: InitialSetupMode = 'required') =>
       set({ initialSetupOpen: true, initialSetupMode: mode }),
 
@@ -191,6 +234,7 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
       applyTheme(settings.theme)
       applyUiFontScale(settings.uiFontScale)
       applyCursorSpotlight(settings.cursorSpotlight !== false)
+      applyCursorSpotlightColor(settings.cursorSpotlightColor)
       if (settings.write?.typography) applyWriteTypography(settings.write.typography)
       set({
         workspaceRoot,

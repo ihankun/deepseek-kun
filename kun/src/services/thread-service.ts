@@ -50,6 +50,7 @@ export type ListThreadsOptions = ThreadStoreListOptions
 export type ForkThreadOptions = {
   relation?: ThreadRelation
   title?: string
+  turnId?: string
 }
 
 export type ResumeSessionOptions = {
@@ -120,6 +121,7 @@ export class ThreadService {
       title: options.title ?? (request.title?.trim() || 'New chat'),
       workspace: request.workspace,
       model: request.model,
+      ...(request.providerId?.trim() ? { providerId: request.providerId.trim() } : {}),
       mode: request.mode,
       approvalPolicy: request.approvalPolicy,
       sandboxMode: request.sandboxMode,
@@ -367,19 +369,37 @@ export class ThreadService {
     const now = this.nowIso()
     const forkId = this.ids.next('thr')
     const relation: ThreadRelation = options.relation ?? 'fork'
+    const targetTurnId = options.turnId?.trim()
+    const targetTurnIndex = targetTurnId
+      ? current.turns.findIndex((turn) => turn.id === targetTurnId)
+      : -1
+    if (targetTurnId && targetTurnIndex < 0) {
+      throw new Error(`turn not found: ${targetTurnId}`)
+    }
+    const sourceTurns = targetTurnId
+      ? current.turns.slice(0, targetTurnIndex + 1)
+      : current.turns
     // Snapshot semantics: clone each turn as it stands now. The parent
     // loop keeps mutating its own record; we copy, never borrow.
-    const clonedTurns = current.turns.map((turn) =>
+    const clonedTurns = sourceTurns.map((turn) =>
       cloneTurnForFork(turn, forkId, now, { relation })
     )
     const clonedItems = clonedTurns.flatMap((turn) => turn.items)
     const defaultTitle = relation === 'side' ? `${current.title} · side` : `${current.title} fork`
+    const forkIncludesLatestTurn = !targetTurnId || clonedTurns.length === current.turns.length
     const fork = createThreadRecord({
       id: forkId,
       title: options.title?.trim() || defaultTitle,
       workspace: current.workspace,
       model: current.model,
-      mode: current.mode,
+      // A fork is a fresh conversation branch, not a continuation of the
+      // parent's plan workflow — the plan artifact and its workspace belong to
+      // the source thread. Inheriting `mode: 'plan'` made a forked "new
+      // conversation" run as a plan turn bound to a stale plan context, which
+      // hard-failed create_plan (workspace mismatch) and produced malformed
+      // plan-mode model requests. Default forks to agent; the user can re-enter
+      // plan mode in the fork if they want a fresh plan.
+      mode: 'agent',
       status: 'idle',
       approvalPolicy: current.approvalPolicy,
       sandboxMode: current.sandboxMode,
@@ -390,7 +410,7 @@ export class ThreadService {
       forkedAt: now,
       forkedFromMessageCount: clonedItems.filter((item) => item.kind === 'user_message').length,
       forkedFromTurnCount: clonedTurns.length,
-      ...(current.todos ? { todos: cloneTodoListForThread(current.todos, forkId, now) } : {}),
+      ...(forkIncludesLatestTurn && current.todos ? { todos: cloneTodoListForThread(current.todos, forkId, now) } : {}),
       createdAt: now
     })
     const record: ThreadRecord = {

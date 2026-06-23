@@ -42,7 +42,9 @@ export function normalizeRunMode(value: unknown): ClawRunMode {
 }
 
 export function normalizeImProvider(value: unknown): ClawImProvider {
-  return value === 'weixin' ? 'weixin' : 'feishu'
+  if (value === 'weixin') return 'weixin'
+  if (value === 'telegram') return 'telegram'
+  return 'feishu'
 }
 
 export function normalizeClawModel(value: unknown): string {
@@ -84,6 +86,6 @@ export function normalizePathSegment(value: unknown): string {
 }
 
 export function normalizeStatus(value: unknown): ScheduleTaskStatus {
-  if (value === 'running' || value === 'success' || value === 'error') return value
+  if (value === 'queued' || value === 'running' || value === 'success' || value === 'error') return value
   return 'idle'
 }

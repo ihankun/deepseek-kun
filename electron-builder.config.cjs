@@ -126,6 +126,7 @@ module.exports = {
     'kun/package.json',
     'kun/package-lock.json',
     'kun/node_modules/**/*',
+    'node_modules/estree-util-is-identifier-name/**/*',
     '!**/*.map',
     '!**/*.d.ts',
     '!**/*.ts',
@@ -143,7 +144,7 @@ module.exports = {
       filter: ['**/*']
     }
   ],
-  artifactName: `Kun-${artifactVersion}-\${os}-\${arch}.\${ext}`,
+  artifactName: `Deepseek-Kun-${artifactVersion}-\${os}-\${arch}.\${ext}`,
   publish: [
     {
       provider: 'generic',

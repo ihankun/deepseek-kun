@@ -100,7 +100,7 @@ module.exports = {
   //    卸载旧版本,用户会装出两份应用;
   //  - macOS TCC 权限、通知授权也都挂在这个 id 上。
   appId: 'com.xingyuzhong.deepseekgui',
-  productName: 'Deepseek Kun',
+  productName: 'Deepseek',
   asar: true,
   asarUnpack: [
     '**/kun/dist/**/*',
@@ -144,7 +144,7 @@ module.exports = {
       filter: ['**/*']
     }
   ],
-  artifactName: `Deepseek-Kun-${artifactVersion}-\${os}-\${arch}.\${ext}`,
+  artifactName: `Deepseek-${artifactVersion}-\${os}-\${arch}.\${ext}`,
   publish: [
     {
       provider: 'generic',

@@ -10,6 +10,8 @@ import {
 import kunLogoPng from '../asset/img/kun.png?url'
 import kunMacLogoPng from '../asset/img/kun_mac.png?url'
 import kunTrayPng from '../asset/img/kun_tray.png?url'
+import deepseekPng from '../asset/img/deepseek.png?url'
+import deepseekTrayPng from '../asset/img/deepseek-tray.png?url'
 import { createAppIcon, pickTrayIcon, prepareTrayIcon } from './app-icon'
 import { buildTrayMenuTemplate, parseTrayThreads, type TrayThreadSummary } from './tray-session-menu'
 import { configureLinuxWaylandImeSwitches } from './app-command-line'
@@ -320,9 +322,9 @@ function installDevPreviewWebviewGuards(): void {
 }
 
 
-const appIconSource = process.platform === 'win32' ? kunMacLogoPng : kunLogoPng
+const appIconSource = process.platform === 'win32' ? kunMacLogoPng : deepseekPng
 const appIcon = createAppIcon(appIconSource)
-const trayIcon = createAppIcon(kunTrayPng)
+const trayIcon = createAppIcon(deepseekTrayPng)
 traceStartup('app icon loaded', { source: appIconSource.startsWith('data:') ? 'data-url' : 'path' })
 const gotSingleInstanceLock = runningClawScheduleMcpServer || app.requestSingleInstanceLock()
 traceStartup('single instance lock checked', {
@@ -1408,7 +1410,7 @@ app.whenReady().then(async () => {
   traceStartup('install webview guards:done')
 
   if (process.platform === 'darwin') {
-    const macDockIcon = createAppIcon(kunMacLogoPng)
+    const macDockIcon = createAppIcon(deepseekPng)
     app.dock.setIcon(macDockIcon.isEmpty() ? appIcon : macDockIcon)
   }
 

@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { PanelTop } from 'lucide-react'
-import { KunStateFigure } from './AnimatedWorkLogo'
+import deepseekPng from '../../../../asset/img/deepseek.png'
 
 /**
  * 迷你工作台舞台:标题栏 + 骨架画布 + 居中熟睡的小 Kun。
@@ -59,7 +59,7 @@ export function KunHeroStage({ waking = false }: { waking?: boolean }): ReactEle
           ) : null}
           <span className="ds-runtime-wake-ring" />
           <span className="ds-runtime-wake-kun-bob">
-            <KunStateFigure kind="sleep" className="ds-runtime-wake-kun" />
+            <img className="ds-runtime-wake-kun" src={deepseekPng} alt="" draggable={false} />
             {waking ? (
               <span className="ds-runtime-wake-zzz">
                 <i>z</i>

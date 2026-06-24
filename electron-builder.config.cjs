@@ -100,7 +100,7 @@ module.exports = {
   //    卸载旧版本,用户会装出两份应用;
   //  - macOS TCC 权限、通知授权也都挂在这个 id 上。
   appId: 'com.xingyuzhong.deepseekgui',
-  productName: 'Kun',
+  productName: 'Deepseek Kun',
   asar: true,
   asarUnpack: [
     '**/kun/dist/**/*',
@@ -169,7 +169,7 @@ module.exports = {
       NSMicrophoneUsageDescription: 'Kun uses the microphone for voice-to-text input.'
     },
     // macOS 不会自动套圆角遮罩,图标文件本身需要是「圆角方块 + 透明边距」
-    icon: './src/asset/img/kun_mac.png',
+    icon: './src/asset/img/deepseek.png',
     // arm64 (Apple Silicon) + x64 (Intel). On M 系列 Mac 本地打包会各出一组 dmg/zip。
     target: [
       { target: 'dmg', arch: ['arm64', 'x64'] },

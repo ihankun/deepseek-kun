@@ -125,7 +125,7 @@ export function prepareTrayIcon(
   const result = resized.isEmpty() ? image : resized
 
   if (platform === 'darwin') {
-    result.setTemplateImage(false)
+    result.setTemplateImage(true)
   }
 
   return result

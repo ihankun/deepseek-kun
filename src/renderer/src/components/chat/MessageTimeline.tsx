@@ -12,7 +12,6 @@ import { GeneratedFilesPanel, MessageBubble } from './message-timeline-bubbles'
 import { ReviewPlanCard, ReviewSummaryCard, TurnChangeSummary, WorkMetaRow } from './message-timeline-cards'
 import { ProcessSectionRow, groupProcessSections } from './message-timeline-process'
 import {
-  AnimatedWorkLogo,
   IKUN_WORK_LOGO_VARIANT_LABEL_KEYS,
   WORK_LOGO_SWIM_MODE_LABEL_KEYS,
   useIkunWorkLogoVariant,
@@ -667,9 +666,6 @@ function LiveTurnProgressRow({ hasActiveGoal }: { hasActiveGoal: boolean }): Rea
 
   return (
     <div className={liveTurnProgressClass(hasActiveGoal)}>
-      <span className="ds-work-logo-slot ds-work-logo-slot-sm mr-0.5">
-        <AnimatedWorkLogo active ikunVariant={ikunVariant} mode={swimMode} phase="trail" size="sm" />
-      </span>
       <span className="ds-shiny-text">{label}</span>
     </div>
   )

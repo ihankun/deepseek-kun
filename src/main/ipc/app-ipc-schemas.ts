@@ -470,7 +470,8 @@ const appBehaviorPatchSchema = z.object({
   openAtLogin: z.boolean().optional(),
   startMinimized: z.boolean().optional(),
   closeAction: z.enum(WINDOW_CLOSE_ACTIONS).optional(),
-  closeToTray: z.boolean().optional()
+  closeToTray: z.boolean().optional(),
+  uiPluginWorkshop: z.boolean().optional()
 }).strict()
 
 const keyboardShortcutCommandIds = KEYBOARD_SHORTCUT_COMMANDS.map((command) => command.id) as [

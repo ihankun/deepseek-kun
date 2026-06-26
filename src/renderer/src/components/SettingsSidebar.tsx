@@ -7,12 +7,14 @@ export function SettingsSidebar({
   category,
   goBack,
   setCategory,
-  t
+  t,
+  uiPluginWorkshop = true
 }: {
   category: SettingsCategory
   goBack: () => void
   setCategory: Dispatch<SetStateAction<SettingsCategory>>
   t: (key: string) => string
+  uiPluginWorkshop?: boolean
 }): ReactElement {
   const catCls = (c: SettingsCategory): string =>
     `flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[14px] font-medium transition ${
@@ -126,15 +128,17 @@ export function SettingsSidebar({
           <Keyboard className="h-4 w-4 shrink-0 opacity-70" strokeWidth={1.75} />
           {t('keyboardShortcuts')}
         </button>
-        <button
-          type="button"
-          data-cursor-spotlight-target
-          className={catCls('easterEgg')}
-          onClick={() => setCategory('easterEgg')}
-        >
-          <Sparkles className="h-4 w-4 shrink-0 opacity-70" strokeWidth={1.75} />
-          {t('easterEgg')}
-        </button>
+        {uiPluginWorkshop ? (
+          <button
+            type="button"
+            data-cursor-spotlight-target
+            className={catCls('easterEgg')}
+            onClick={() => setCategory('easterEgg')}
+          >
+            <Sparkles className="h-4 w-4 shrink-0 opacity-70" strokeWidth={1.75} />
+            {t('easterEgg')}
+          </button>
+        ) : null}
         <button
           type="button"
           data-cursor-spotlight-target

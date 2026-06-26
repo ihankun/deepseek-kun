@@ -516,6 +516,8 @@ export type AppBehaviorConfigV1 = {
   closeAction?: WindowCloseAction
   /** Legacy compatibility field. New code should use closeAction. */
   closeToTray: boolean
+  /** 形象工坊开关 */
+  uiPluginWorkshop: boolean
 }
 
 export type ScheduleSkillSettingsV1 = {

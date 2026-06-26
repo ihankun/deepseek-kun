@@ -96,7 +96,7 @@ function buildSettings(): AppSettingsV1 {
     workspaceRoot: '/tmp/workspace',
     log: { enabled: true, retentionDays: 7 },
     notifications: { turnComplete: true },
-    appBehavior: { openAtLogin: false, startMinimized: false, closeToTray: false },
+    appBehavior: { openAtLogin: false, startMinimized: false, closeToTray: false, uiPluginWorkshop: true },
     keyboardShortcuts: defaultKeyboardShortcuts(),
     write: defaultWriteSettings(),
     claw: defaultClawSettings(),

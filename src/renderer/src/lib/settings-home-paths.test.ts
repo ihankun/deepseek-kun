@@ -109,7 +109,7 @@ function settings(): AppSettingsV1 {
     workspaceRoot: '~/.kun/default_workspace',
     log: { enabled: true, retentionDays: 2 },
     notifications: { turnComplete: true },
-    appBehavior: { openAtLogin: false, startMinimized: false, closeToTray: false },
+    appBehavior: { openAtLogin: false, startMinimized: false, closeToTray: false, uiPluginWorkshop: true },
     keyboardShortcuts: defaultKeyboardShortcuts(),
     write: {
       ...defaultWriteSettings(),

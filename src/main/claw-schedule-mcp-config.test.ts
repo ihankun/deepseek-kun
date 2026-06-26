@@ -46,7 +46,7 @@ function createSettings(patch: Partial<AppSettingsV1['schedule']['internal']> = 
     notifications: {
       turnComplete: true
     },
-    appBehavior: { openAtLogin: false, startMinimized: false, closeToTray: false },
+    appBehavior: { openAtLogin: false, startMinimized: false, closeToTray: false, uiPluginWorkshop: true },
     keyboardShortcuts: defaultKeyboardShortcuts(),
     write: defaultWriteSettings(),
     schedule: {

@@ -429,6 +429,19 @@ export function GeneralSettingsSection({ ctx }: { ctx: Record<string, any> }): R
                 />
               </SettingsCard>
 
+              <SettingsCard title={t('uiPluginWorkshop')} className="mt-6">
+                <SettingRow
+                  title={t('uiPluginWorkshop')}
+                  description={t('uiPluginWorkshopDesc')}
+                  control={
+                    <Toggle
+                      checked={form.appBehavior.uiPluginWorkshop !== false}
+                      onChange={(v) => update({ appBehavior: { uiPluginWorkshop: v } })}
+                    />
+                  }
+                />
+              </SettingsCard>
+
               <SettingsCard title={t('onboardingPreview')} className="mt-6">
                 <SettingRow
                   title={t('onboardingPreview')}

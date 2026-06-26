@@ -797,12 +797,20 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
   })
 
   ipcMain.handle('ui-plugin:list', async () => {
+    const settings = await store.load()
+    if (settings.appBehavior.uiPluginWorkshop === false) {
+      return { plugins: [] }
+    }
     const kunHomeDir = join(homedir(), '.kun')
     await ensureBundledUiPlugins(kunHomeDir)
     return { plugins: await listUiPlugins(kunHomeDir) }
   })
 
   ipcMain.handle('ui-plugin:install', async () => {
+    const settings = await store.load()
+    if (settings.appBehavior.uiPluginWorkshop === false) {
+      return { canceled: true as const }
+    }
     const mainWindow = getMainWindow()
     const options: Electron.OpenDialogOptions = {
       title: 'Select a UI plugin folder',
@@ -823,11 +831,19 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
   })
 
   ipcMain.handle('ui-plugin:remove', async (_, payload: unknown) => {
+    const settings = await store.load()
+    if (settings.appBehavior.uiPluginWorkshop === false) {
+      return { ok: false }
+    }
     const request = parseIpcPayload('ui-plugin:remove', uiPluginIdPayloadSchema, payload)
     return { ok: await removeUiPlugin(join(homedir(), '.kun'), request.id) }
   })
 
   ipcMain.handle('ui-plugin:load', async (_, payload: unknown) => {
+    const settings = await store.load()
+    if (settings.appBehavior.uiPluginWorkshop === false) {
+      return null
+    }
     const request = parseIpcPayload('ui-plugin:load', uiPluginIdPayloadSchema, payload)
     const kunHomeDir = join(homedir(), '.kun')
     await ensureBundledUiPlugins(kunHomeDir)

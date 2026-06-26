@@ -85,6 +85,18 @@ export const useUiPluginStore = create<UiPluginState>((set, get) => ({
   initUiPlugins: async () => {
     if (get().initialized) return
     set({ initialized: true, uiMode: UI_MODE_DEFAULT })
+    const api = uiPluginApi()
+    if (api) {
+      try {
+        const settings = await api.getSettings()
+        if (settings.appBehavior.uiPluginWorkshop === false) {
+          applyUiModeDom(UI_MODE_DEFAULT, null)
+          return
+        }
+      } catch {
+        // fall through
+      }
+    }
     applyUiModeDom(UI_MODE_DEFAULT, null)
   },
 

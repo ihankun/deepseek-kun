@@ -135,7 +135,8 @@ export function normalizeAppBehaviorSettings(
     openAtLogin,
     startMinimized: openAtLogin && settings?.startMinimized === true,
     closeAction,
-    closeToTray: closeAction === 'tray'
+    closeToTray: closeAction === 'tray',
+    uiPluginWorkshop: settings?.uiPluginWorkshop !== false
   }
 }
 

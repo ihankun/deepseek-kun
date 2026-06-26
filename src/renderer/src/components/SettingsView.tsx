@@ -265,6 +265,13 @@ export function SettingsView(): ReactElement {
   }, [category, loadWriteDebugEntries])
 
   useEffect(() => {
+    if (!form) return
+    if (form.appBehavior.uiPluginWorkshop === false && category === 'easterEgg') {
+      setCategory('general')
+    }
+  }, [form, category])
+
+  useEffect(() => {
     if (!form || initializedCategory.current) return
     initializedCategory.current = true
     if (!getActiveAgentApiKey(form).trim()) {
@@ -978,7 +985,7 @@ export function SettingsView(): ReactElement {
 
   return (
     <div className="ds-drag flex h-full min-h-0 w-full min-w-0 bg-ds-main">
-      <SettingsSidebar category={category} setCategory={setCategory} goBack={goBack} t={t} />
+      <SettingsSidebar category={category} setCategory={setCategory} goBack={goBack} t={t} uiPluginWorkshop={form?.appBehavior.uiPluginWorkshop !== false} />
 
       <div className="ds-no-drag min-h-0 min-w-0 flex-1 overflow-y-auto px-10 py-10">
         <div className="mx-auto max-w-3xl">
@@ -1039,7 +1046,7 @@ export function SettingsView(): ReactElement {
           {category === 'worktree' ? <WorktreeSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'memory' ? <MemorySettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'shortcuts' ? <KeyboardShortcutsSettingsSection ctx={settingsSectionContext} /> : null}
-          {category === 'easterEgg' ? <EasterEggSettingsSection ctx={settingsSectionContext} /> : null}
+          {category === 'easterEgg' && form?.appBehavior.uiPluginWorkshop !== false ? <EasterEggSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'claw' ? <ClawSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'updates' ? <UpdatesSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'terminal' ? <TerminalSettingsSection ctx={settingsSectionContext} /> : null}

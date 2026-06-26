@@ -59,7 +59,7 @@ function settings(): AppSettingsV1 {
     workspaceRoot: '/tmp/workspace',
     log: { enabled: false, retentionDays: 7 },
     notifications: { turnComplete: true },
-    appBehavior: { openAtLogin: false, startMinimized: false, closeToTray: false },
+    appBehavior: { openAtLogin: false, startMinimized: false, closeToTray: false, uiPluginWorkshop: true },
     keyboardShortcuts: defaultKeyboardShortcuts(),
     write: defaultWriteSettings(),
     claw: defaultClawSettings(),
@@ -288,7 +288,8 @@ describe('app behavior settings', () => {
       openAtLogin: false,
       startMinimized: false,
       closeAction: 'ask',
-      closeToTray: false
+      closeToTray: false,
+    uiPluginWorkshop: true
     })
   })
 
@@ -298,7 +299,8 @@ describe('app behavior settings', () => {
       appBehavior: {
         openAtLogin: false,
         startMinimized: true,
-        closeToTray: true
+        closeToTray: true,
+        uiPluginWorkshop: true
       }
     })
 
@@ -306,7 +308,8 @@ describe('app behavior settings', () => {
       openAtLogin: false,
       startMinimized: false,
       closeAction: 'tray',
-      closeToTray: true
+      closeToTray: true,
+      uiPluginWorkshop: true
     })
   })
 

@@ -1,7 +1,7 @@
 {
   "name": "kun-gui",
   "productName": "Deepseek",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Electron workbench for the Kun runtime (HTTP/SSE)",
   "main": "./out/main/index.js",
   "type": "module",

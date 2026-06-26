@@ -117,6 +117,20 @@ export function deriveTurnSections({
     ? -1
     : findLastAssistantContentIndex(turn.blocks)
 
+  // When DeepSeek thinking mode leaves content empty, the runtime falls
+  // back to baking reasoning text into an assistant_text item. In that
+  // case the reasoning block and the assistant block carry identical text;
+  // skip the reasoning block to avoid showing the same content twice.
+  const assistantTexts = new Set<string>()
+  if (!isProcessing) {
+    for (const block of turn.blocks) {
+      if (block.kind === 'assistant') {
+        const trimmed = block.text.trim()
+        if (trimmed) assistantTexts.add(trimmed)
+      }
+    }
+  }
+
   for (const [index, block] of turn.blocks.entries()) {
     if (block.kind === 'assistant') {
       const split = splitThink(block.text)
@@ -134,6 +148,11 @@ export function deriveTurnSections({
       continue
     }
     if (isProcessBlock(block)) {
+      // Deduplicate: skip reasoning blocks whose content is already shown
+      // as the final answer bubble (runtime fallback for thinking mode).
+      if (block.kind === 'reasoning' && assistantTexts.has(block.text.trim())) {
+        continue
+      }
       processBlocks.push(block)
     }
   }

@@ -41,7 +41,6 @@ import {
 import { Sidebar } from './chat/Sidebar'
 import { WorkbenchTopBar, type RightPanelMode } from './chat/WorkbenchTopBar'
 import { MessageTimeline } from './chat/MessageTimeline'
-import { IkunCameoLayer } from './chat/AnimatedWorkLogo'
 import {
   FloatingComposer,
   type ComposerExecutionSettings,
@@ -98,7 +97,7 @@ import { normalizeWorkspaceRoot } from '../lib/workspace-path'
 import { useKeyboardShortcutSettings } from '../lib/keyboard-shortcut-settings'
 import { collectComposerChangeSummary } from '../lib/composer-change-summary'
 import { formatWorkspacePickerError } from '../lib/format-workspace-picker-error'
-import { useUiModeCameosEnabled, useUiPluginStore } from '../store/ui-plugin-store'
+import { useUiPluginStore } from '../store/ui-plugin-store'
 import { readFocusModePreference, writeFocusModePreference } from '../lib/focus-mode'
 import {
   buildComposerFileContextPrompt,
@@ -473,7 +472,6 @@ export function Workbench(): ReactElement {
   const [fileTreeSidePanelOpen, setFileTreeSidePanelOpen] = useState(false)
   const [openFilePreviewTargets, setOpenFilePreviewTargets] = useState<WorkspaceFileTarget[]>([])
   const initUiPlugins = useUiPluginStore((s) => s.initUiPlugins)
-  const uiModeCameosEnabled = useUiModeCameosEnabled()
   const [focusModeEnabled, setFocusModeEnabled] = useState(readFocusModePreference)
   const [runtimeLogPath, setRuntimeLogPath] = useState('')
   const [planPanelOverlayPreferred, setPlanPanelOverlayPreferred] = useState(false)
@@ -2619,7 +2617,6 @@ export function Workbench(): ReactElement {
                   ) : null
                 }
               />
-              {uiModeCameosEnabled && !focusModeEnabled ? <IkunCameoLayer /> : null}
             </div>
             <div className="ds-no-drag flex shrink-0 justify-center px-2 pb-3 pt-0 sm:px-4 md:px-6 lg:px-8">
               <FloatingComposer

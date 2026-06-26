@@ -1418,7 +1418,7 @@ export class AgentLoop {
           })
         )
       }
-      if (!persistedText && textAccumulator.value) {
+      if (!persistedText && textAccumulator.value.trim()) {
         persistedText = true
         const itemId = textItemId || this.opts.ids.next('item_text')
         await this.opts.turns.applyItem(
@@ -1428,6 +1428,23 @@ export class AgentLoop {
             turnId,
             threadId,
             text: textAccumulator.value,
+            status: 'completed'
+          })
+        )
+      } else if (!persistedText && reasoningAccumulator.value) {
+        // DeepSeek thinking mode sometimes puts the entire response into
+        // reasoning_content with content left empty. When that happens,
+        // bake the reasoning text into an assistant_text item too so the
+        // frontend can display it as the answer bubble.
+        persistedText = true
+        const itemId = textItemId || this.opts.ids.next('item_text')
+        await this.opts.turns.applyItem(
+          threadId,
+          makeAssistantTextItem({
+            id: itemId,
+            turnId,
+            threadId,
+            text: reasoningAccumulator.value,
             status: 'completed'
           })
         )

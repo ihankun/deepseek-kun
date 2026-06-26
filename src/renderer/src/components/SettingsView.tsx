@@ -70,7 +70,8 @@ import {
   SpeechToTextSettingsSection,
   UpdatesSettingsSection,
   WriteSettingsSection,
-  TerminalSettingsSection
+  TerminalSettingsSection,
+  WorkshopSettingsSection
 } from './settings-sections'
 
 type SettingsCategory = 'general' | 'providers' | 'write' | 'mediaGeneration' | 'speechToText' | 'agents' | 'archives' | 'permissions' | 'worktree' | 'memory' | 'shortcuts' | 'easterEgg' | 'claw' | 'updates' | 'debug' | 'terminal'
@@ -1036,7 +1037,12 @@ export function SettingsView(): ReactElement {
             </div>
           ) : null}
 
-          {category === 'general' ? <GeneralSettingsSection ctx={settingsSectionContext} /> : null}
+          {category === 'general' ? (
+            <>
+              <GeneralSettingsSection ctx={settingsSectionContext} />
+              <WorkshopSettingsSection ctx={settingsSectionContext} />
+            </>
+          ) : null}
           {category === 'providers' ? <ProvidersSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'write' ? <WriteSettingsSection ctx={settingsSectionContext} /> : null}
           {category === 'mediaGeneration' ? <MediaGenerationSettingsSection ctx={settingsSectionContext} /> : null}

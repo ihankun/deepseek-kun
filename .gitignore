@@ -46,6 +46,9 @@ rad.json
 #Test results file
 TestResults.xml
 
+### Tool data
+.workbuddy/
+
 ### Internal docs
 docs/R2_RELEASE.md
 

@@ -26,6 +26,7 @@ import type { ClawImDialogMode } from './SidebarClawDialogHelpers'
 import { ClawAddImDialog } from './SidebarClawDialog'
 import { ConnectPhoneSidebarPanel } from './ConnectPhoneView'
 import { SidebarProjectsSection } from './SidebarProjectsSection'
+import { SidebarConversationsSection } from './SidebarConversationsSection'
 import { WorkspaceModeTabs } from './WorkspaceModeTabs'
 import {
   SidebarCommandRow,
@@ -63,6 +64,7 @@ type Props = {
   onWriteOpen: () => void
   onScheduleOpen: () => void
   onWorkflowOpen: () => void
+  onNewConversation: () => void
 }
 
 export function Sidebar({
@@ -94,7 +96,8 @@ export function Sidebar({
   onCodeOpen,
   onWriteOpen,
   onScheduleOpen,
-  onWorkflowOpen
+  onWorkflowOpen,
+  onNewConversation
 }: Props): ReactElement {
   const { t, i18n } = useTranslation('common')
   const [isDarkMode, setIsDarkMode] = useState(
@@ -110,6 +113,7 @@ export function Sidebar({
   }, [])
 
   const workspaceRoot = useChatStore((s) => s.workspaceRoot)
+  const conversationWorkspaceRoot = useChatStore((s) => s.conversationWorkspaceRoot)
   const codeWorkspaceRoots = useChatStore((s) => s.codeWorkspaceRoots)
   const chooseWorkspace = useChatStore((s) => s.chooseWorkspace)
   const deleteWorkspace = useChatStore((s) => s.deleteWorkspace)
@@ -262,6 +266,7 @@ export function Sidebar({
           showArchived={showArchivedThreads}
           workspaceRoot={workspaceRoot}
           workspaceRoots={codeWorkspaceRoots}
+          conversationRoot={conversationWorkspaceRoot}
           busy={busy}
           watchTurnCompletion={watchTurnCompletion}
           unreadThreadIds={unreadThreadIds}
@@ -280,6 +285,7 @@ export function Sidebar({
           t={t}
         />
       ) : (
+      <>
       <SidebarProjectsSection
         threads={threads}
         activeView={activeView === 'write' ? 'write' : 'chat'}
@@ -289,6 +295,7 @@ export function Sidebar({
         showArchived={showArchivedThreads}
         workspaceRoot={workspaceRoot}
         workspaceRoots={codeWorkspaceRoots}
+        conversationRoot={conversationWorkspaceRoot}
         busy={busy}
         watchTurnCompletion={watchTurnCompletion}
         unreadThreadIds={unreadThreadIds}
@@ -306,6 +313,21 @@ export function Sidebar({
         onSearchQueryChange={onThreadSearchChange}
         t={t}
       />
+      <SidebarConversationsSection
+        threads={threads}
+        activeThreadId={activeThreadId}
+        runtimeReady={runtimeReady}
+        conversationRoot={conversationWorkspaceRoot}
+        onNewConversation={onNewConversation}
+        onSelectThread={onSelectThread}
+        onRenameThread={onRenameThread}
+        onPinThread={onPinThread}
+        onArchiveThread={onArchiveThread}
+        onDeleteThread={onDeleteThread}
+        onRestoreThread={onRestoreThread}
+        t={t}
+      />
+      </>
       )}
 
     </SidebarFrame>
